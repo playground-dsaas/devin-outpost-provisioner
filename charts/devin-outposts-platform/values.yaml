@@ -30,7 +30,7 @@ operator:
     # Built from the devin-outpost-k8s commit in OPERATOR_REF. Older images do not
     # know resume.volumeDataSource/homeDir and reject the pools the provisioner writes.
     repository: ghcr.io/cognitionai/devin-outposts-k8s
-    tag: sha-a3cc7c3a2366fb3cec22d54e2d147ce15fb01011
+    tag: sha-e8abf05f0483238be357be7c6afa31e2fda0c32c
     pullPolicy: IfNotPresent
   replicaCount: 2
   operator:

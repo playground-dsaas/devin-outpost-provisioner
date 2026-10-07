@@ -42,11 +42,13 @@ Makefile                         lint / package / provisioner-check / provisione
   clone-from-snapshot (EBS, PowerScale/Isilon, ...).
 - Three images in a registry the cluster can pull from (set the repository/tag
   and `imagePullSecrets` values for each):
-  - operator: `make operator-image OPERATOR_IMAGE=<registry>/devin/devin-outposts-k8s:<tag>`
-    builds https://github.com/CognitionAI/devin-outpost-k8s at the commit in
-    `charts/devin-outposts-platform/OPERATOR_REF`. Any image built from that
-    commit or a later one works; older operators do not know
-    `resume.volumeDataSource`/`homeDir` and reject the pools.
+  - operator: `ghcr.io/cognitionai/devin-outposts-k8s:sha-<OPERATOR_REF>`, published
+    by https://github.com/CognitionAI/devin-outpost-k8s for the commit in
+    `charts/devin-outposts-platform/OPERATOR_REF` (the chart's default; mirror it
+    if the cluster cannot reach ghcr.io). To build it yourself instead:
+    `make operator-image OPERATOR_IMAGE=<registry>/devin/devin-outposts-k8s:<tag>`.
+    Any image built from that commit or a later one works; older operators do
+    not know `resume.volumeDataSource`/`homeDir` and reject the pools.
   - org-provisioner: `make provisioner-image PROVISIONER_IMAGE=<registry>/devin/org-provisioner:<tag>`
     (`provisioner/Dockerfile`).
   - worker: Cognition's `devin-outpost-prod:<release tag>`, unchanged, mirrored
