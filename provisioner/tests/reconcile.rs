@@ -141,6 +141,25 @@ async fn rebinds_existing_outpost_without_creating() {
 }
 
 #[tokio::test]
+async fn outpost_restricted_to_org_under_another_prefix_is_not_adopted() {
+    let devin = MemDevin::default();
+    devin.add_org(ORG_A, "Alpha");
+    devin
+        .create_outpost(&CreateOutpost {
+            name: "other-cluster-alpha".into(),
+            description: None,
+            allowed_org_ids: Some(vec![ORG_A.into()]),
+        })
+        .await
+        .unwrap();
+    let r = reconciler(devin);
+    let report = r.run_pass(t0()).await.unwrap();
+    assert_eq!(report.outposts_created, 1);
+    assert_eq!(r.cluster().pool(NS_A).unwrap().spec.pool_id, "outpost_2");
+    assert_eq!(r.devin().outposts()[1].spec.name, "eks-alpha");
+}
+
+#[tokio::test]
 async fn same_name_outpost_restricted_to_another_org_is_not_reused() {
     let devin = MemDevin::default();
     devin.add_org(ORG_A, "Alpha");

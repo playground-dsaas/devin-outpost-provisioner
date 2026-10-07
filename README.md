@@ -76,7 +76,10 @@ helm upgrade --install outposts charts/devin-outposts-platform -n $NS -f my-valu
 # On clusters that enforce the restricted PSS level (not OpenShift) add:
 #   --post-renderer charts/devin-outposts-platform/post-render.sh
 
-# 2. golden home volume for the worker image named in poolTemplate.pool.worker.overrides.image
+# 2. golden home volume for the worker image named in poolTemplate.pool.worker.overrides.image.
+#    OpenShift: its seed Job runs as the image's uid 1000, so the system namespace
+#    needs the SCC binding the provisioner creates for org namespaces, once:
+#    oc adm policy add-role-to-group system:openshift:scc:nonroot-v2 system:serviceaccounts:$NS -n $NS
 helm install golden-home-a0f71d0e6a charts/devin-golden-home -n $NS \
   --set image=registry.example.com/devin/devin-outpost-prod:release-a0f71d0e6a-20261005061956 \
   --set storageClassName=isilon --set volumeSnapshotClassName=<class> \
@@ -170,7 +173,13 @@ The pool template is validated by the provisioner's tests
   so the provisioner binds `system:openshift:scc:nonroot-v2` to every
   ServiceAccount of each org namespace as it creates it; no `oc adm policy`
   step per org. Use a custom SCC's `system:openshift:scc:<name>` ClusterRole
-  instead if `nonroot-v2` is not allowed.
+  instead if `nonroot-v2` is not allowed. The `devin-golden-home` seed Job
+  runs as uid 1000 too, in the system namespace, which the provisioner does
+  not manage: bind the same ClusterRole there by hand (see the install steps).
+- One Outpost per org *per cluster*: the provisioner adopts only Outposts
+  named `<outpostNamePrefix><org slug>`, so give every cluster of an account
+  its own `provisioner.outpostNamePrefix` (and `operator.operator.acceptorId`);
+  two clusters on one Outpost would both claim its sessions.
 - The default NetworkPolicy's DNS rule targets `kube-system`/`kube-dns`;
   OpenShift's resolver is in `openshift-dns`. `values-openshift.yaml` uses an
   allow-all egress instead; tighten to taste.
@@ -207,7 +216,7 @@ and then prints one line per check, failing the test if any `FAIL` remains:
 | `devin-api/organizations`, `devin-api/outposts` | the token lists the enterprise's organizations and the account's Outposts at `provisioner.devinApiUrl` |
 | `golden-snapshot <image>` | a `readyToUse` golden VolumeSnapshot for the default worker image, and for every image an org resolves to, exists in the system namespace |
 | `<ns>/namespace` | the org's namespace exists and is not marked orphaned |
-| `<ns>/pool` | the OutpostPool exists and its `poolId` is an Outpost of the account restricted to that org (`WARN` if unrestricted) |
+| `<ns>/pool` | the OutpostPool exists and its `poolId` is an Outpost of the account named with this install's `outpostNamePrefix` (another cluster's Outpost otherwise) and restricted to that org (`WARN` if unrestricted) |
 | `<ns>/pool/image` | the pool runs the image the rules resolve for that org |
 | `<ns>/operator` | the operator has synced the pool: `status.phase: Ready` (`Unauthorized`/`Degraded` carry the operator's error message) |
 | `<ns>/token-secret` | `devin-pool-token` exists with its `token` key |

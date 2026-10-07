@@ -381,6 +381,15 @@ impl<D: DevinApi, C: Cluster> Verifier<D, C> {
                     pool.spec.pool_id
                 ),
             ),
+            Some(o) if !o.spec.name.starts_with(&self.settings.outpost_name_prefix) => {
+                report.fail(
+                    format!("{ns_name}/pool"),
+                    format!(
+                        "bound to Outpost {} ({}), which does not carry this install's prefix {:?}: another cluster's Outpost, or the prefix changed since the pool was created; delete the pool so the provisioner rebinds",
+                        o.spec.name, o.metadata.outpost_id, self.settings.outpost_name_prefix
+                    ),
+                )
+            }
             Some(o)
                 if o.spec
                     .allowed_org_ids

@@ -156,3 +156,24 @@ async fn unready_golden_snapshot_and_api_failure_are_reported() {
     assert_eq!(report.checks.len(), 1);
     assert!(failure(&report, "devin-api/organizations").contains("503"));
 }
+
+#[tokio::test]
+async fn pool_bound_to_another_installs_outpost_fails() {
+    let (devin, cluster) = provisioned(template()).await;
+    let mut other_install = settings();
+    other_install.outpost_name_prefix = "ocp-".into();
+    let v = Verifier::new(
+        devin,
+        cluster,
+        template(),
+        WorkerImages::default(),
+        other_install,
+    );
+
+    let report = v.run().await.unwrap();
+    let detail = failure(&report, &format!("{NS_A}/pool"));
+    assert!(
+        detail.contains("eks-alpha") && detail.contains("\"ocp-\""),
+        "{detail}"
+    );
+}
