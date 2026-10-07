@@ -8,6 +8,7 @@ use k8s_openapi::api::core::v1::{
     ResourceQuotaSpec, Secret, TypedLocalObjectReference,
 };
 use k8s_openapi::api::networking::v1::{NetworkPolicy, NetworkPolicySpec};
+use k8s_openapi::api::rbac::v1::{RoleBinding, RoleRef, Subject};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use kube::ResourceExt;
 
@@ -105,6 +106,7 @@ pub struct Bundle {
     pub resource_quota: Option<ResourceQuota>,
     pub limit_range: Option<LimitRange>,
     pub network_policy: Option<NetworkPolicy>,
+    pub role_bindings: Vec<RoleBinding>,
     /// The golden snapshot bound into this namespace, applied before the pool.
     pub volume_snapshot_content: VolumeSnapshotContent,
     pub volume_snapshot: VolumeSnapshot,
@@ -208,6 +210,25 @@ pub fn render(input: &RenderInput<'_>) -> Bundle {
         }),
     });
 
+    let role_bindings = ns_policy
+        .role_bindings
+        .iter()
+        .map(|b| RoleBinding {
+            metadata: meta(&b.name, Some(namespace), org),
+            role_ref: RoleRef {
+                api_group: "rbac.authorization.k8s.io".to_string(),
+                kind: "ClusterRole".to_string(),
+                name: b.cluster_role.clone(),
+            },
+            subjects: Some(vec![Subject {
+                api_group: Some("rbac.authorization.k8s.io".to_string()),
+                kind: "Group".to_string(),
+                name: format!("system:serviceaccounts:{namespace}"),
+                namespace: None,
+            }]),
+        })
+        .collect();
+
     // Retain: the storage-side snapshot belongs to the golden VolumeSnapshot
     // in the system namespace; deleting an org's binding must not delete it.
     let volume_snapshot_content = VolumeSnapshotContent {
@@ -273,6 +294,7 @@ pub fn render(input: &RenderInput<'_>) -> Bundle {
         resource_quota,
         limit_range,
         network_policy,
+        role_bindings,
         volume_snapshot_content,
         volume_snapshot,
         pool,

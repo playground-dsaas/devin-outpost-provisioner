@@ -252,6 +252,11 @@ poolTemplate:
       # bounds retained sessions, not concurrency.
       persistentvolumeclaims: "2000"
       requests.storage: 40Ti
+    # ClusterRoles granted to every ServiceAccount of each org namespace. Needed
+    # on OpenShift, where workers keep uid 1000 only through an SCC (see
+    # values-openshift.yaml); each ClusterRole listed here is also added to
+    # the provisioner's `bind` permission.
+    roleBindings: []
     limitRange:
       defaultRequest: { cpu: "1", memory: 2Gi }
       default: { cpu: "3", memory: 8Gi }

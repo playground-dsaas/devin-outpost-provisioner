@@ -60,6 +60,22 @@ pub struct NamespacePolicy {
     /// none.
     #[serde(default)]
     pub network_policy: Option<NetworkPolicyTemplate>,
+    /// `RoleBinding`s granting a ClusterRole to every ServiceAccount in the
+    /// namespace (OpenShift: `system:openshift:scc:<scc>` lets the workers
+    /// keep their fixed uid). Omit on clusters without such a requirement.
+    #[serde(default)]
+    pub role_bindings: Vec<NamespaceRoleBinding>,
+}
+
+/// One namespace-wide grant of a ClusterRole.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NamespaceRoleBinding {
+    /// `RoleBinding` name.
+    pub name: String,
+    /// The ClusterRole bound; the provisioner's own ClusterRole must be allowed
+    /// to `bind` it.
+    pub cluster_role: String,
 }
 
 /// One container-type `LimitRangeItem`.
@@ -234,6 +250,14 @@ pool:
     fn parses_openshift_values() {
         let t = PoolTemplate::parse_helm_values(&[CHART_VALUES, OPENSHIFT_VALUES]).unwrap();
         assert_eq!(t.pool.resume.storage_class_name.as_deref(), Some("isilon"));
+        assert_eq!(
+            t.namespace
+                .role_bindings
+                .iter()
+                .map(|b| b.cluster_role.as_str())
+                .collect::<Vec<_>>(),
+            vec!["system:openshift:scc:nonroot-v2"]
+        );
         assert!(
             t.pool
                 .worker
@@ -251,6 +275,7 @@ pool:
         assert!(ns.resource_quota.is_some());
         assert!(ns.limit_range.is_some());
         assert!(ns.network_policy.is_some());
+        assert!(ns.role_bindings.is_empty());
         assert_eq!(
             ns.labels
                 .get("pod-security.kubernetes.io/enforce")

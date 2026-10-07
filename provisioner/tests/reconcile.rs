@@ -205,6 +205,13 @@ async fn provisions_new_org_end_to_end() {
     assert_eq!(ns.annotations()[ANNOTATION_OUTPOST_RESTRICTED], "true");
     assert!(c.has_quota(NS_A));
     assert!(c.has_network_policy(NS_A));
+    let scc = c.role_bindings(NS_A);
+    assert_eq!(scc.len(), 1);
+    assert_eq!(scc[0].role_ref.name, "system:openshift:scc:nonroot-v2");
+    assert_eq!(
+        scc[0].subjects.as_ref().unwrap()[0].name,
+        format!("system:serviceaccounts:{NS_A}")
+    );
     let secret = c.secret(NS_A, TOKEN_SECRET_NAME).expect("token secret");
     assert_eq!(secret.string_data.unwrap()[TOKEN_SECRET_KEY], "cog_tok");
     let pool = c.pool(NS_A).expect("pool created");
