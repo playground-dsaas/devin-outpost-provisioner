@@ -1,0 +1,66 @@
+{{- if .Values.warmWorkers.enabled }}
+{{- $spec := .Values.poolTemplate.pool.worker.template.spec }}
+{{- $worker := first $spec.containers }}
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Release.Namespace }}-warm-worker
+  labels:
+    app.kubernetes.io/name: warm-worker
+    app.kubernetes.io/instance: {{ .Release.Name }}
+value: {{ .Values.warmWorkers.priorityClassValue }}
+globalDefault: false
+preemptionPolicy: Never
+description: Preemptible placeholder pods that keep a worker node warm.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warm-worker
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: warm-worker
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.warmWorkers.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: warm-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: warm-worker
+    spec:
+      priorityClassName: {{ .Release.Namespace }}-warm-worker
+      terminationGracePeriodSeconds: 5
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with $spec.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $spec.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $spec.securityContext }}
+      securityContext:
+        {{- toYaml (omit . "fsGroup" "fsGroupChangePolicy") | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: warm-worker
+          image: {{ .Values.poolTemplate.pool.worker.overrides.image | quote }}
+          imagePullPolicy: {{ $worker.imagePullPolicy | default "IfNotPresent" }}
+          command: ["sleep", "infinity"]
+          {{- with $worker.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # The worker's requests as both requests and limits, so the node that
+          # fits a placeholder fits a worker.
+          resources:
+            requests:
+              {{- toYaml $worker.resources.requests | nindent 14 }}
+            limits:
+              {{- toYaml $worker.resources.requests | nindent 14 }}
+{{- end }}

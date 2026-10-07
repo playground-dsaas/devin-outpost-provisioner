@@ -1,0 +1,17 @@
+{{- if and .Values.provisioner.enabled .Values.provisioner.metrics.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "platform.provisioner.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform.provisioner.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "platform.provisioner.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+{{- end }}

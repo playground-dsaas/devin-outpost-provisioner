@@ -1,0 +1,42 @@
+# Worker image to seed from. Must be byte-for-byte an image in the platform
+# chart: poolTemplate.pool.worker.overrides.image or one under
+# workerImages.images. The provisioner picks the snapshot whose
+# devin.cognition.com/worker-image annotation equals the org's image.
+image: public.ecr.aws/e0h8a4b6/devin-outpost-prod:release-a0f71d0e6a-20261005061956
+imagePullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Resource name. Default: worker-home-<image tag without "release-">.
+nameOverride: ""
+
+# StorageClass with CSI snapshot + clone support; "" = cluster default.
+storageClassName: ""
+# Keep <= the pool's resume.volumeSize (clones cannot be smaller than the source).
+size: 20Gi
+# VolumeSnapshotClass for the storage class's driver; "" = the default class.
+volumeSnapshotClassName: ""
+
+# Where the image keeps the user's home and Homebrew.
+homeDir: /home/ubuntu
+linuxbrewDir: /home/linuxbrew/.linuxbrew
+
+# Same uid/gid the workers run with, so the copied tree is owned correctly.
+podSecurityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  runAsNonRoot: true
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+
+resources:
+  requests: { cpu: 500m, memory: 256Mi }
+  limits: { cpu: "2", memory: 1Gi }
+# Schedule where worker pods run (the image is usually cached there).
+nodeSelector: {}
+tolerations: []
+activeDeadlineSeconds: 1200

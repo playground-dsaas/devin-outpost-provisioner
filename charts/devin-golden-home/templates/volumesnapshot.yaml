@@ -1,0 +1,22 @@
+# post-install hook: created only after the PVC and Job above are done, which
+# `helm install --wait --wait-for-jobs` guarantees. Hook resources are not
+# removed by `helm uninstall`, so the snapshot (and the per-org bindings that
+# reference its storage handle) survive deleting the release.
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: {{ include "golden.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "golden.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install
+    helm.sh/hook-weight: "0"
+    # The provisioner matches this against the pool template's worker image.
+    devin.cognition.com/worker-image: {{ .Values.image | quote }}
+spec:
+  {{- with .Values.volumeSnapshotClassName }}
+  volumeSnapshotClassName: {{ . }}
+  {{- end }}
+  source:
+    persistentVolumeClaimName: {{ include "golden.name" . }}

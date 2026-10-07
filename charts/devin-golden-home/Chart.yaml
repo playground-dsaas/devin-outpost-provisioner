@@ -1,0 +1,10 @@
+apiVersion: v2
+name: devin-golden-home
+description: >-
+  Golden home volume for Devin Outposts workers: a PVC seeded with the worker
+  image's /home/ubuntu and /home/linuxbrew/.linuxbrew, then snapshotted. The
+  org provisioner clones every new session volume from this snapshot. Install
+  one release per worker image tag into the platform (system) namespace.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

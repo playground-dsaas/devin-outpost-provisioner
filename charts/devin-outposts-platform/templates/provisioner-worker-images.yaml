@@ -1,0 +1,14 @@
+{{- if and .Values.provisioner.enabled .Values.workerImages.managed }}
+# Per-org worker images (schema: provisioner/src/images.rs). Re-read by the
+# provisioner every pass; edit in place to move orgs between images.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "platform.provisioner.name" . }}-worker-images
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform.provisioner.labels" . | nindent 4 }}
+data:
+  worker-images.yaml: |
+    {{- toYaml (omit .Values.workerImages "managed") | nindent 4 }}
+{{- end }}

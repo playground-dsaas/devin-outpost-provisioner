@@ -1,0 +1,19 @@
+{{- if .Values.systemNamespace.create }}
+# Normally the release namespace already exists (helm --create-namespace or a
+# cluster-admin created it). Enable this only to let Helm own it; the keep
+# policy stops `helm uninstall` from deleting it together with the release.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- with .Values.systemNamespace.podSecurityEnforce }}
+    pod-security.kubernetes.io/enforce: {{ . }}
+    pod-security.kubernetes.io/enforce-version: latest
+    {{- end }}
+    {{- with .Values.systemNamespace.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

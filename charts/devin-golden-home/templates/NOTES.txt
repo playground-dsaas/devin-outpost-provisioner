@@ -1,0 +1,12 @@
+Golden home volume {{ include "golden.name" . }} seeded from
+
+  {{ .Values.image }}
+
+Wait for the snapshot, then the provisioner will start binding it into each org:
+
+  kubectl -n {{ .Release.Namespace }} wait --for=jsonpath='{.status.readyToUse}'=true \
+    --timeout=10m volumesnapshot/{{ include "golden.name" . }}
+
+Install this chart once per worker image tag (do not `helm upgrade` an existing
+release to a new image; the Job is immutable). Old releases can be uninstalled
+once no pool references them: the snapshot is kept, the PVC is deleted.

@@ -1,0 +1,74 @@
+# Copies the image's home and Homebrew prefix onto the golden volume. The volume
+# root becomes each session's $HOME; .linuxbrew is mounted back at Homebrew's
+# prefix by the pool template (subPath). Runs on the worker nodes with the
+# worker's identity, so the copy is byte-for-byte what a session's own first
+# boot would produce.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "golden.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "golden.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: {{ .Values.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "golden.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: seed
+          image: {{ .Values.image | quote }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          command: ["/bin/bash", "-euo", "pipefail", "-c"]
+          args:
+            - |
+              # Copy the children, not the directory: the volume root is owned by
+              # root (fsGroup only adds the group), so cp -a cannot restore its times.
+              shopt -s dotglob
+              cp -a {{ .Values.homeDir }}/* /mnt/home/
+              cp -a {{ .Values.linuxbrewDir }} /mnt/home/.linuxbrew
+              # The image's ~/.bashrc returns before it initialises nvm and
+              # Homebrew when the shell is non-interactive, so the agent's
+              # command shells see neither; ~/.profile is sourced either way.
+              cat >>/mnt/home/.profile <<'SHIM'
+              # outpost: nvm/brew for non-interactive shells
+              for d in "$HOME"/.nvm/versions/node/*/bin; do [ -d "$d" ] && PATH="$d:$PATH"; done
+              [ -d {{ .Values.linuxbrewDir }}/bin ] && PATH="{{ .Values.linuxbrewDir }}/bin:{{ .Values.linuxbrewDir }}/sbin:$PATH"
+              SHIM
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: home
+              mountPath: /mnt/home
+      volumes:
+        - name: home
+          persistentVolumeClaim:
+            claimName: {{ include "golden.name" . }}

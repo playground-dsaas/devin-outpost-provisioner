@@ -1,0 +1,39 @@
+# Example: OpenShift with the PowerScale/Isilon CSI driver and images mirrored
+# to an internal registry. SCCs assign the provisioner uid, so runAsUser is
+# left unset; the operator chart sets no securityContext, so restricted-v2
+# applies to it unchanged.
+#
+# Worker pods run as uid 1000 and need an SCC that allows it (anyuid, or a
+# custom SCC) bound to the `default` ServiceAccount of each org namespace. The
+# provisioner does not grant SCCs yet; see README.md.
+operator:
+  image:
+    repository: registry.example.com/devin/devin-outpost-k8s
+  operator:
+    defaultApiUrl: https://devin.example.com/api
+    acceptorId: openshift-prod
+
+provisioner:
+  image:
+    repository: registry.example.com/devin/org-provisioner
+    tag: 0123456789ab
+  devinApiUrl: https://devin.example.com/api
+  token:
+    existingSecret: devin-outposts-token
+  podSecurityContext:
+    runAsUser: null
+    runAsGroup: null
+
+poolTemplate:
+  pool:
+    resume:
+      storageClassName: isilon
+      snapshotTtlSeconds: 7776000
+    worker:
+      overrides:
+        image: registry.example.com/devin/devin-outpost-prod:release-a0f71d0e6a-20261005061956
+  namespace:
+    networkPolicy:
+      ingress: []
+      egress:
+        - {}

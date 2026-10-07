@@ -1,0 +1,18 @@
+apiVersion: v2
+name: devin-outposts-platform
+description: >-
+  Devin Outposts platform namespace: the Outposts operator (watching every
+  namespace) plus the org provisioner that gives each Devin organization its
+  own namespace and OutpostPool. Per-org namespaces are created at runtime by
+  the provisioner, not by this chart.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  # charts/devin-outposts-k8s of CognitionAI/devin-outpost-k8s at the commit in
+  # OPERATOR_REF, copied into charts/ by `make operator-chart` (not committed).
+  # Keep operator.image.tag in sync with it.
+  - name: devin-outposts-k8s
+    version: 0.1.0
+    alias: operator
+    condition: operator.enabled

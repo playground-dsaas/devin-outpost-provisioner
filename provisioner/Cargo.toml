@@ -1,0 +1,40 @@
+[package]
+name = "org-provisioner"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+description = "Provisions one Devin Outpost + namespace + OutpostPool per enterprise organization."
+repository = "https://github.com/playground-dsaas/devin-outpost-provisioner"
+publish = false
+
+[[bin]]
+name = "org-provisioner"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+aws-config = { version = "1", default-features = false, features = ["rt-tokio", "rustls"] }
+aws-sdk-secretsmanager = { version = "1", default-features = false, features = ["rt-tokio", "rustls"] }
+axum = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+# The operator crate, pinned to the same commit as charts/devin-outposts-platform/OPERATOR_REF,
+# supplies the OutpostPool CRD types so rendered pools always match the CRD.
+devin-outposts-k8s = { git = "https://github.com/CognitionAI/devin-outpost-k8s.git", rev = "a3cc7c3a2366fb3cec22d54e2d147ce15fb01011" }
+futures = "0.3"
+k8s-openapi = { version = "0.28", features = ["v1_34", "schemars"] }
+kube = { version = "4.0", features = ["runtime", "derive", "client"] }
+prometheus-client = "0.25"
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml_ng = "0.10"
+sha2 = "0.10"
+thiserror = "2.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }

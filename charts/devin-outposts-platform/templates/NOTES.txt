@@ -1,0 +1,22 @@
+devin-outposts-platform installed in namespace {{ .Release.Namespace }}.
+
+  operator:     {{ if .Values.operator.enabled }}enabled (watching all namespaces){{ else }}disabled{{ end }}
+  provisioner:  {{ if .Values.provisioner.enabled }}enabled, polling every {{ .Values.provisioner.pollIntervalSeconds }}s{{ else }}disabled{{ end }}
+  org namespaces: {{ .Values.provisioner.namespacePrefix }}<org-id>
+  outposts:       {{ .Values.provisioner.outpostNamePrefix }}<org-slug>
+
+Each org's OutpostPool is created only once a golden home volume snapshot for
+the worker image below is ready in {{ .Release.Namespace }}:
+
+  {{ .Values.poolTemplate.pool.worker.overrides.image }}
+
+Build it with the devin-golden-home chart (same image), e.g.
+
+  helm install golden-home ../devin-golden-home -n {{ .Release.Namespace }} \
+    --set image={{ .Values.poolTemplate.pool.worker.overrides.image }} \
+    --wait --wait-for-jobs --timeout 20m
+
+Check progress:
+
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "platform.provisioner.name" . }} -f
+  kubectl get outpostpools -A
