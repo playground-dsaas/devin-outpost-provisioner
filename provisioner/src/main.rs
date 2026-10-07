@@ -1,4 +1,8 @@
 //! Entry point for the `org-provisioner` binary.
+//!
+//! No arguments: reconcile forever (the Deployment). `verify`: run the
+//! acceptance checklist once the cluster has caught up and exit non-zero on
+//! any failure (the `helm test` Pod). Both read the same environment.
 
 use std::sync::Arc;
 
@@ -11,13 +15,21 @@ use org_provisioner::metrics::{self, Metrics};
 use org_provisioner::reconcile::{Reconciler, Settings};
 use org_provisioner::template::PoolTemplate;
 use org_provisioner::token;
+use org_provisioner::verify::Verifier;
 use tokio::signal::unix::{SignalKind, signal};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    if std::env::args().nth(1).as_deref() == Some("--version") {
-        println!("org-provisioner {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
+    let subcommand = std::env::args().nth(1);
+    match subcommand.as_deref() {
+        Some("--version") => {
+            println!("org-provisioner {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        None | Some("verify") => {}
+        Some(other) => {
+            anyhow::bail!("unknown argument {other:?}; expected no arguments or `verify`")
+        }
     }
     telemetry::init();
     rustls::crypto::ring::default_provider()
@@ -25,28 +37,22 @@ async fn main() -> anyhow::Result<()> {
         .expect("no other crypto provider is installed before this");
 
     let config = Config::from_env()?;
-    tracing::info!(?config, "starting org-provisioner");
-
     let template = PoolTemplate::load(&config.pool_template_path)?;
     let images = WorkerImages::load(&config.worker_images_path)?;
     let token = token::load(&config.token_source).await?;
     let devin = DevinClient::new(&config.api_url, token.clone())?;
     let cluster = KubeCluster::new(kube::Client::try_default().await?);
-    let metrics = Metrics::new();
 
-    let settings = Settings {
-        api_url: config.api_url.clone(),
-        namespace_prefix: config.namespace_prefix.clone(),
-        outpost_name_prefix: config.outpost_name_prefix.clone(),
-        exclude_org_ids: config.exclude_org_ids.clone(),
-        deprovision_grace: config.deprovision_grace,
-        system_namespace: config.system_namespace.clone(),
-    };
+    if subcommand.is_some() {
+        return verify(config, devin, cluster, template, images).await;
+    }
+    tracing::info!(?config, "starting org-provisioner");
+    let metrics = Metrics::new();
     let reconciler = Arc::new(tokio::sync::Mutex::new(Reconciler::new(
         devin,
         cluster,
         template,
-        settings,
+        settings(&config),
         token,
         metrics.clone(),
     )));
@@ -96,6 +102,40 @@ async fn main() -> anyhow::Result<()> {
         res = metrics_server => res??,
         _ = tokio::signal::ctrl_c() => tracing::info!("received SIGINT, shutting down"),
         _ = sigterm.recv() => tracing::info!("received SIGTERM, shutting down"),
+    }
+    Ok(())
+}
+
+fn settings(config: &Config) -> Settings {
+    Settings {
+        api_url: config.api_url.clone(),
+        namespace_prefix: config.namespace_prefix.clone(),
+        outpost_name_prefix: config.outpost_name_prefix.clone(),
+        exclude_org_ids: config.exclude_org_ids.clone(),
+        deprovision_grace: config.deprovision_grace,
+        system_namespace: config.system_namespace.clone(),
+    }
+}
+
+async fn verify(
+    config: Config,
+    devin: DevinClient,
+    cluster: KubeCluster,
+    template: PoolTemplate,
+    images: WorkerImages,
+) -> anyhow::Result<()> {
+    tracing::info!(
+        timeout_secs = config.verify_timeout.as_secs(),
+        "verifying the installation"
+    );
+    let verifier = Verifier::new(devin, cluster, template, images, settings(&config));
+    let report = verifier
+        .run_until_ok(config.verify_timeout, config.verify_interval)
+        .await?;
+    println!("{report}");
+    let failed = report.failures().count();
+    if failed > 0 {
+        anyhow::bail!("{failed} checks failed");
     }
     Ok(())
 }

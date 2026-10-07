@@ -118,6 +118,10 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
         &self.devin
     }
 
+    pub fn into_parts(self) -> (D, C) {
+        (self.devin, self.cluster)
+    }
+
     /// Run one pass at `now`. Fails only when the inputs (org list, Outpost
     /// list, cluster inventory) cannot be read or no golden snapshot is ready
     /// for the template's worker image; per-org failures, including an org

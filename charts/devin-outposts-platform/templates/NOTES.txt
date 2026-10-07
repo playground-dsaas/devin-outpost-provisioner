@@ -16,6 +16,10 @@ Build it with the devin-golden-home chart (same image), e.g.
     --set image={{ .Values.poolTemplate.pool.worker.overrides.image }} \
     --wait --wait-for-jobs --timeout 20m
 
+Acceptance checklist (waits up to {{ .Values.provisioner.test.timeoutSeconds }}s for the pools, operator and snapshots):
+
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
+
 Check progress:
 
   kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "platform.provisioner.name" . }} -f

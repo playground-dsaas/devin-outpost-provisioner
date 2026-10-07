@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use devin_outposts_k8s::crd::OutpostPool;
+use devin_outposts_k8s::crd::{OutpostPool, OutpostPoolStatus};
 use k8s_openapi::api::core::v1::{LimitRange, Namespace, ResourceQuota, Secret};
 use k8s_openapi::api::networking::v1::NetworkPolicy;
 use k8s_openapi::api::rbac::v1::RoleBinding;
@@ -43,6 +43,16 @@ pub trait Cluster: Send + Sync {
         &self,
         name: &str,
     ) -> Result<Option<VolumeSnapshotContent>>;
+
+    // Read-only lookups for `verify`.
+    async fn get_volume_snapshot(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Option<VolumeSnapshot>>;
+    async fn get_secret(&self, namespace: &str, name: &str) -> Result<Option<Secret>>;
+    /// Managed `RoleBinding`s in one namespace.
+    async fn list_role_bindings(&self, namespace: &str) -> Result<Vec<RoleBinding>>;
 
     /// Set (or with `None`, remove) one annotation on a namespace.
     async fn annotate_namespace(&self, name: &str, key: &str, value: Option<&str>) -> Result<()>;
@@ -171,6 +181,25 @@ impl Cluster for KubeCluster {
     ) -> Result<Option<VolumeSnapshotContent>> {
         let api: Api<VolumeSnapshotContent> = Api::all(self.client.clone());
         Ok(api.get_opt(name).await?)
+    }
+
+    async fn get_volume_snapshot(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Option<VolumeSnapshot>> {
+        let api: Api<VolumeSnapshot> = Api::namespaced(self.client.clone(), namespace);
+        Ok(api.get_opt(name).await?)
+    }
+
+    async fn get_secret(&self, namespace: &str, name: &str) -> Result<Option<Secret>> {
+        let api: Api<Secret> = Api::namespaced(self.client.clone(), namespace);
+        Ok(api.get_opt(name).await?)
+    }
+
+    async fn list_role_bindings(&self, namespace: &str) -> Result<Vec<RoleBinding>> {
+        let api: Api<RoleBinding> = Api::namespaced(self.client.clone(), namespace);
+        Ok(api.list(&Self::managed_selector()).await?.items)
     }
 
     async fn annotate_namespace(&self, name: &str, key: &str, value: Option<&str>) -> Result<()> {
@@ -318,6 +347,35 @@ impl MemCluster {
         s.snapshots
             .insert((namespace.to_string(), name.to_string()), snapshot);
         s.contents.insert(content_name, content);
+    }
+
+    /// What the operator writes once it has reconciled the pool.
+    pub fn set_pool_status(&self, namespace: &str, status: OutpostPoolStatus) {
+        let mut s = self.inner.lock().unwrap();
+        if let Some(p) = s
+            .pools
+            .get_mut(&(namespace.to_string(), crate::naming::POOL_NAME.to_string()))
+        {
+            p.status = Some(status);
+        }
+    }
+
+    /// What the snapshot controller does to a pre-provisioned binding.
+    pub fn mark_volume_snapshot_ready(&self, namespace: &str, name: &str) {
+        let mut s = self.inner.lock().unwrap();
+        if let Some(v) = s
+            .snapshots
+            .get_mut(&(namespace.to_string(), name.to_string()))
+        {
+            v.status = Some(crate::snapshot::VolumeSnapshotStatus {
+                bound_volume_snapshot_content_name: v
+                    .spec
+                    .source
+                    .volume_snapshot_content_name
+                    .clone(),
+                ready_to_use: Some(true),
+            });
+        }
     }
 
     pub fn has_quota(&self, namespace: &str) -> bool {
@@ -475,7 +533,10 @@ impl Cluster for MemCluster {
     async fn apply_pool(&self, obj: &OutpostPool) -> Result<()> {
         let mut s = self.inner.lock().unwrap();
         Self::record(&mut s, format!("apply OutpostPool/{}", obj.name_any()));
-        s.pools.insert(key(obj), obj.clone());
+        // `status` is a subresource: applying the spec leaves it as the operator set it.
+        let mut obj = obj.clone();
+        obj.status = s.pools.get(&key(&obj)).and_then(|p| p.status.clone());
+        s.pools.insert(key(&obj), obj);
         Ok(())
     }
 
@@ -500,6 +561,22 @@ impl Cluster for MemCluster {
         name: &str,
     ) -> Result<Option<VolumeSnapshotContent>> {
         Ok(self.inner.lock().unwrap().contents.get(name).cloned())
+    }
+
+    async fn get_volume_snapshot(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Option<VolumeSnapshot>> {
+        Ok(self.volume_snapshot(namespace, name))
+    }
+
+    async fn get_secret(&self, namespace: &str, name: &str) -> Result<Option<Secret>> {
+        Ok(self.secret(namespace, name))
+    }
+
+    async fn list_role_bindings(&self, namespace: &str) -> Result<Vec<RoleBinding>> {
+        Ok(self.role_bindings(namespace))
     }
 
     async fn annotate_namespace(&self, name: &str, key: &str, value: Option<&str>) -> Result<()> {

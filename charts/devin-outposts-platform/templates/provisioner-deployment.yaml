@@ -62,44 +62,7 @@ spec:
           image: "{{ $p.image.repository }}:{{ $p.image.tag }}"
           imagePullPolicy: {{ $p.image.pullPolicy }}
           env:
-            - name: DEVIN_API_URL
-              value: {{ $p.devinApiUrl | quote }}
-            {{- if $p.token.existingSecret }}
-            - name: OUTPOSTS_TOKEN_FILE
-              value: /var/run/secrets/devin/{{ $p.token.secretKey }}
-            {{- else }}
-            - name: OUTPOSTS_TOKEN_SECRET_ID
-              value: {{ $p.token.awsSecretId | quote }}
-            {{- with $p.token.awsRegion }}
-            - name: AWS_REGION
-              value: {{ . | quote }}
-            {{- end }}
-            {{- end }}
-            - name: NAMESPACE_PREFIX
-              value: {{ $p.namespacePrefix | quote }}
-            - name: OUTPOST_NAME_PREFIX
-              value: {{ $p.outpostNamePrefix | quote }}
-            - name: EXCLUDE_ORG_IDS
-              value: {{ join "," $p.excludeOrgIds | quote }}
-            - name: POLL_INTERVAL_SECONDS
-              value: {{ $p.pollIntervalSeconds | quote }}
-            - name: DEPROVISION_GRACE_SECONDS
-              value: {{ $p.deprovisionGraceSeconds | quote }}
-            - name: POOL_TEMPLATE_PATH
-              value: /etc/org-provisioner/pool-template.yaml
-            - name: WORKER_IMAGES_PATH
-              value: /etc/org-provisioner/worker-images.yaml
-            - name: SYSTEM_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-            - name: METRICS_ADDR
-              value: 0.0.0.0:8080
-            - name: RUST_LOG
-              value: {{ printf "%s,org_provisioner=%s" $p.logLevel $p.logLevel | quote }}
-            {{- with $p.extraEnv }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
+            {{- include "platform.provisioner.env" . | nindent 12 }}
           ports:
             - name: http
               containerPort: 8080
@@ -122,28 +85,7 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           volumeMounts:
-            - name: config
-              mountPath: /etc/org-provisioner
-              readOnly: true
-            {{- if $p.token.existingSecret }}
-            - name: outposts-token
-              mountPath: /var/run/secrets/devin
-              readOnly: true
-            {{- end }}
+            {{- include "platform.provisioner.volumeMounts" . | nindent 12 }}
       volumes:
-        - name: config
-          projected:
-            sources:
-              - configMap:
-                  name: {{ include "platform.provisioner.name" . }}-pool-template
-              - configMap:
-                  name: {{ include "platform.provisioner.name" . }}-worker-images
-        {{- if $p.token.existingSecret }}
-        - name: outposts-token
-          secret:
-            secretName: {{ $p.token.existingSecret }}
-            items:
-              - key: {{ $p.token.secretKey }}
-                path: {{ $p.token.secretKey }}
-        {{- end }}
+        {{- include "platform.provisioner.volumes" . | nindent 8 }}
 {{- end }}

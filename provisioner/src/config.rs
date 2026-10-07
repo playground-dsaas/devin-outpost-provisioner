@@ -45,6 +45,10 @@ pub struct Config {
     pub metrics_addr: SocketAddr,
     /// Run one pass and exit.
     pub once: bool,
+    /// `verify`: how long to keep re-checking until everything passes.
+    pub verify_timeout: Duration,
+    /// `verify`: time between attempts.
+    pub verify_interval: Duration,
 }
 
 fn env_or(name: &str, default: &str) -> String {
@@ -106,6 +110,8 @@ impl Config {
             system_namespace: env_or("SYSTEM_NAMESPACE", "devin-system"),
             metrics_addr,
             once: std::env::var("RUN_ONCE").is_ok_and(|v| v == "1" || v == "true"),
+            verify_timeout: env_secs("VERIFY_TIMEOUT_SECONDS", 240)?,
+            verify_interval: env_secs("VERIFY_INTERVAL_SECONDS", 15)?,
         })
     }
 }

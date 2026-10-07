@@ -179,21 +179,62 @@ The pool template is validated by the provisioner's tests
 
 ## Validation
 
-No cluster needed, and what CI runs on every change:
+Offline, what CI runs on every change (no cluster):
 
 - `make lint`: fetches the operator subchart at `OPERATOR_REF`, then
   `helm lint` + `helm template` + `kubeconform` (with the OutpostPool CRD
   schema) on both charts with the default and OpenShift values.
 - `make provisioner-check`: `cargo fmt`, `clippy -D warnings`, and the tests,
-  which drive the provisioner against an in-memory Devin API and cluster and
-  parse the shipped chart values as the pool template.
+  which drive the provisioner and the verifier against an in-memory Devin API
+  and cluster and parse the shipped chart values as the pool template.
 - `make package`: both charts as `dist/*.tgz`, operator subchart included.
+
+On a cluster, after the install steps above and once the golden home release
+has finished:
+
+```sh
+helm test outposts -n $NS --logs
+```
+
+runs a Pod from the provisioner image (`org-provisioner verify`,
+`provisioner/src/verify.rs`) with the Deployment's ServiceAccount, token and
+ConfigMaps. It re-reads the cluster every 15 s for up to 4 min
+(`provisioner.test.*`; keep that under `helm test --timeout`, 5 m by default)
+and then prints one line per check, failing the test if any `FAIL` remains:
+
+| check | passes when |
+|---|---|
+| `devin-api/organizations`, `devin-api/outposts` | the token lists the enterprise's organizations and the account's Outposts at `provisioner.devinApiUrl` |
+| `golden-snapshot <image>` | a `readyToUse` golden VolumeSnapshot for the default worker image, and for every image an org resolves to, exists in the system namespace |
+| `<ns>/namespace` | the org's namespace exists and is not marked orphaned |
+| `<ns>/pool` | the OutpostPool exists and its `poolId` is an Outpost of the account restricted to that org (`WARN` if unrestricted) |
+| `<ns>/pool/image` | the pool runs the image the rules resolve for that org |
+| `<ns>/operator` | the operator has synced the pool: `status.phase: Ready` (`Unauthorized`/`Degraded` carry the operator's error message) |
+| `<ns>/token-secret` | `devin-pool-token` exists with its `token` key |
+| `<ns>/golden-binding` | the org's VolumeSnapshot binding is `readyToUse` and the pool clones session volumes from it |
+| `<ns>/rolebinding/<name>` | each `poolTemplate.namespace.roleBindings` entry binds its ClusterRole to `system:serviceaccounts:<ns>` (OpenShift: the SCC that admits uid 1000) |
+| `<ns>/default-platform` | `WARN` until the org's default platform has been pointed at its Outpost in the Devin UI (manual; no API) |
+| `<ns>/orphaned` | `WARN` for a namespace whose org has left the enterprise and is inside the grace period |
+
+An org with no namespace fails `<ns>/namespace`: either the provisioner has not
+run yet, or Devin refuses to restrict an Outpost to that org (the
+enterprise-level org), in which case add it to `provisioner.excludeOrgIds`.
+Everything a `FAIL` says is also in `kubectl -n $NS logs deploy/org-provisioner`
+(provisioner side), `kubectl get opool -A` (operator side, `Phase` column) and
+`kubectl -n $NS get volumesnapshot` (storage side). A failed test Pod is kept
+until the next run: `kubectl -n $NS logs org-provisioner-verify`.
+
+What a clean report does not prove: that a worker pod is admitted (the SCC
+actually allows uid 1000), starts the desktop and reaches Devin. The last
+acceptance step is a real session in one of the orgs while watching
+`kubectl -n <ns> get pods -w`.
 
 This layout (operator and provisioner in one system namespace, a namespace and
 pool per org, golden home volumes per image, per-org image rules, sleep/wake
 persistence) has been run end to end from these charts on an EKS cluster. It
 has not yet been installed on OpenShift; the SCC binding, CSI snapshot and DNS
-points above are the known differences.
+points above are the known differences, and `helm test` is what should be run
+there first.
 
 ## Upstream
 

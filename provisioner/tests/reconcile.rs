@@ -1,146 +1,21 @@
 //! Reconcile-pass behaviour against an in-memory Devin account and cluster.
 
-use std::collections::BTreeSet;
-use std::sync::Mutex;
 use std::time::Duration;
 
-use async_trait::async_trait;
-use chrono::{DateTime, TimeZone, Utc};
 use kube::ResourceExt;
+use org_provisioner::Error;
 use org_provisioner::cluster::MemCluster;
-use org_provisioner::devin::{
-    CreateOutpost, DevinApi, Organization, Outpost, OutpostMetadata, OutpostSpec,
-};
+use org_provisioner::devin::{CreateOutpost, DevinApi};
 use org_provisioner::images::WorkerImages;
 use org_provisioner::metrics::Metrics;
 use org_provisioner::naming::{TOKEN_SECRET_KEY, TOKEN_SECRET_NAME};
-use org_provisioner::reconcile::{PassReport, Reconciler, Settings};
+use org_provisioner::reconcile::{PassReport, Reconciler};
 use org_provisioner::render::{
     ANNOTATION_DEFAULT_PLATFORM, ANNOTATION_ORPHANED_SINCE, ANNOTATION_OUTPOST_ID,
     ANNOTATION_OUTPOST_RESTRICTED, LABEL_ORG_SLUG,
 };
-use org_provisioner::template::PoolTemplate;
-use org_provisioner::{Error, Result};
-
-const ORG_A: &str = "org-aaaaaaaa11111111aaaaaaaa11111111";
-const ORG_B: &str = "org-bbbbbbbb22222222bbbbbbbb22222222";
-const NS_A: &str = "devin-org-aaaaaaaa1111";
-const NS_B: &str = "devin-org-bbbbbbbb2222";
-const GRACE: Duration = Duration::from_secs(3600);
-
-/// In-memory Devin account.
-#[derive(Default)]
-struct MemDevin {
-    orgs: Mutex<Vec<Organization>>,
-    outposts: Mutex<Vec<Outpost>>,
-    /// Org IDs the account rejects in `allowed_org_ids`.
-    foreign_orgs: Mutex<BTreeSet<String>>,
-    fail_org_list: Mutex<bool>,
-    created: Mutex<Vec<CreateOutpost>>,
-    deleted: Mutex<Vec<String>>,
-    counter: Mutex<u32>,
-}
-
-impl MemDevin {
-    fn add_org(&self, id: &str, name: &str) {
-        self.orgs.lock().unwrap().push(Organization {
-            org_id: id.into(),
-            name: name.into(),
-            created_at: None,
-            updated_at: None,
-        });
-    }
-    fn remove_org(&self, id: &str) {
-        self.orgs.lock().unwrap().retain(|o| o.org_id != id);
-    }
-    fn outposts(&self) -> Vec<Outpost> {
-        self.outposts.lock().unwrap().clone()
-    }
-    fn created(&self) -> Vec<CreateOutpost> {
-        self.created.lock().unwrap().clone()
-    }
-    fn deleted(&self) -> Vec<String> {
-        self.deleted.lock().unwrap().clone()
-    }
-}
-
-#[async_trait]
-impl DevinApi for MemDevin {
-    async fn list_organizations(&self) -> Result<Vec<Organization>> {
-        if *self.fail_org_list.lock().unwrap() {
-            return Err(Error::Api {
-                status: 503,
-                body: "unavailable".into(),
-            });
-        }
-        Ok(self.orgs.lock().unwrap().clone())
-    }
-    async fn list_outposts(&self) -> Result<Vec<Outpost>> {
-        Ok(self.outposts())
-    }
-    async fn create_outpost(&self, req: &CreateOutpost) -> Result<Outpost> {
-        self.created.lock().unwrap().push(req.clone());
-        if let Some(ids) = &req.allowed_org_ids {
-            let foreign = self.foreign_orgs.lock().unwrap();
-            let bad: Vec<&String> = ids.iter().filter(|id| foreign.contains(*id)).collect();
-            if !bad.is_empty() {
-                return Err(Error::InvalidOrgIds(format!(
-                    "Invalid organization IDs: {bad:?}"
-                )));
-            }
-        }
-        let mut n = self.counter.lock().unwrap();
-        *n += 1;
-        let outpost = Outpost {
-            metadata: OutpostMetadata {
-                outpost_id: format!("outpost_{n}"),
-                account_id: None,
-                created_at: None,
-            },
-            spec: OutpostSpec {
-                name: req.name.clone(),
-                platform: None,
-                description: req.description.clone(),
-                allowed_org_ids: req.allowed_org_ids.clone(),
-            },
-        };
-        self.outposts.lock().unwrap().push(outpost.clone());
-        Ok(outpost)
-    }
-    async fn delete_outpost(&self, outpost_id: &str) -> Result<()> {
-        self.deleted.lock().unwrap().push(outpost_id.into());
-        self.outposts
-            .lock()
-            .unwrap()
-            .retain(|o| o.metadata.outpost_id != outpost_id);
-        Ok(())
-    }
-}
-
-fn settings() -> Settings {
-    Settings {
-        api_url: "https://api.devin.ai".into(),
-        namespace_prefix: "devin-org-".into(),
-        outpost_name_prefix: "eks-".into(),
-        exclude_org_ids: BTreeSet::new(),
-        deprovision_grace: GRACE,
-        system_namespace: "devin-system".into(),
-    }
-}
-
-const GOLDEN: &str = "worker-home";
-
-fn template() -> PoolTemplate {
-    PoolTemplate::parse_helm_values(&[
-        include_str!("../../charts/devin-outposts-platform/values.yaml"),
-        include_str!("../../charts/devin-outposts-platform/values-openshift.yaml"),
-    ])
-    .unwrap()
-}
-
-fn worker_image() -> String {
-    template().pool.worker.overrides.image.unwrap()
-}
+mod common;
+use common::*;
 
 fn reconciler_on(devin: MemDevin, cluster: MemCluster) -> Reconciler<MemDevin, MemCluster> {
     Reconciler::new(
@@ -153,20 +28,8 @@ fn reconciler_on(devin: MemDevin, cluster: MemCluster) -> Reconciler<MemDevin, M
     )
 }
 
-/// A cluster where `make golden-snapshot` has already run for the template's
-/// worker image.
-fn golden_cluster() -> MemCluster {
-    let cluster = MemCluster::default();
-    cluster.add_golden_snapshot("devin-system", GOLDEN, &worker_image(), "snap-golden", true);
-    cluster
-}
-
 fn reconciler(devin: MemDevin) -> Reconciler<MemDevin, MemCluster> {
     reconciler_on(devin, golden_cluster())
-}
-
-fn t0() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap()
 }
 
 #[tokio::test]
