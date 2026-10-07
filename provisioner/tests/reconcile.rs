@@ -333,12 +333,23 @@ async fn removed_org_is_marked_then_deleted_after_grace() {
     assert!(r.cluster().namespace(NS_B).is_none());
     assert_eq!(r.cluster().namespace_names(), vec![NS_A]);
     assert!(r.cluster().pool(NS_A).is_some());
-    let content = |ns: &str| {
-        r.cluster()
-            .get_volume_snapshot_content(&format!("{GOLDEN}-{ns}"))
-    };
-    assert!(content(NS_B).await.unwrap().is_none());
-    assert!(content(NS_A).await.unwrap().is_some());
+    let content_b = format!("{GOLDEN}-{NS_B}");
+    let content_a = format!("{GOLDEN}-{NS_A}");
+    let cluster = r.cluster();
+    assert!(
+        cluster
+            .get_volume_snapshot_content(&content_b)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        cluster
+            .get_volume_snapshot_content(&content_a)
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]
