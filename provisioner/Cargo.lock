@@ -884,7 +884,7 @@ dependencies = [
 [[package]]
 name = "devin-outposts-k8s"
 version = "0.1.0"
-source = "git+https://github.com/CognitionAI/devin-outpost-k8s.git?rev=a3cc7c3a2366fb3cec22d54e2d147ce15fb01011#a3cc7c3a2366fb3cec22d54e2d147ce15fb01011"
+source = "git+https://github.com/CognitionAI/devin-outpost-k8s.git?rev=e8abf05f0483238be357be7c6afa31e2fda0c32c#e8abf05f0483238be357be7c6afa31e2fda0c32c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2322,7 +2322,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.45",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror",
  "tokio",
  "tracing",
@@ -2361,7 +2361,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
