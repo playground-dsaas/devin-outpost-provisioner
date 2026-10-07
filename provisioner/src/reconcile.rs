@@ -355,15 +355,34 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
         // Created once, never re-applied: `spec.volumeSnapshotRef` is atomic
         // and the snapshot controller stamps the bound snapshot's uid into it;
         // re-applying would strip the uid and the CSI provisioner would refuse
-        // to restore from it ("bound to a different snapshot").
+        // to restore from it ("bound to a different snapshot"). The content is
+        // cluster-scoped, so it outlives a deleted namespace: one bound to a
+        // VolumeSnapshot uid that no longer exists is deleted here and created
+        // afresh on the next pass, once its finalizers have run.
         let content = &bundle.volume_snapshot_content;
-        if self
+        let content_name = content.name_any();
+        let existing = self
             .cluster
-            .get_volume_snapshot_content(&content.name_any())
-            .await?
-            .is_none()
-        {
-            self.cluster.apply_volume_snapshot_content(content).await?;
+            .get_volume_snapshot_content(&content_name)
+            .await?;
+        let bound_uid = existing
+            .as_ref()
+            .and_then(|c| c.spec.volume_snapshot_ref.uid.as_deref());
+        match (existing.is_some(), bound_uid) {
+            (false, _) => self.cluster.apply_volume_snapshot_content(content).await?,
+            (true, None) => {}
+            (true, Some(bound_uid)) => {
+                let current = self
+                    .cluster
+                    .get_volume_snapshot(ns_name, &bundle.volume_snapshot.name_any())
+                    .await?;
+                if current.as_ref().and_then(|v| v.metadata.uid.as_deref()) != Some(bound_uid) {
+                    tracing::warn!(namespace = %ns_name, content = %content_name, "VolumeSnapshotContent is bound to a VolumeSnapshot that no longer exists; replacing");
+                    self.cluster
+                        .delete_volume_snapshot_content(&content_name)
+                        .await?;
+                }
+            }
         }
         self.cluster
             .apply_volume_snapshot(&bundle.volume_snapshot)
@@ -506,6 +525,12 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
         }
         tracing::warn!(namespace = %name, "deleting namespace");
         self.cluster.delete_namespace(&name).await?;
+        // Cluster-scoped, so not swept by the namespace deletion.
+        if let Some(org_id) = render::org_id_of(ns) {
+            self.cluster
+                .delete_volume_snapshot_contents_of(org_id)
+                .await?;
+        }
         self.metrics
             .deletions
             .get_or_create(&crate::metrics::KindLabel::namespace())

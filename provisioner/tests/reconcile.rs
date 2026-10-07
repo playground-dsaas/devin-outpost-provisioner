@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use kube::ResourceExt;
 use org_provisioner::Error;
-use org_provisioner::cluster::MemCluster;
+use org_provisioner::cluster::{Cluster, MemCluster};
 use org_provisioner::devin::{CreateOutpost, DevinApi};
 use org_provisioner::images::WorkerImages;
 use org_provisioner::metrics::Metrics;
@@ -333,6 +333,12 @@ async fn removed_org_is_marked_then_deleted_after_grace() {
     assert!(r.cluster().namespace(NS_B).is_none());
     assert_eq!(r.cluster().namespace_names(), vec![NS_A]);
     assert!(r.cluster().pool(NS_A).is_some());
+    let content = |ns: &str| {
+        r.cluster()
+            .get_volume_snapshot_content(&format!("{GOLDEN}-{ns}"))
+    };
+    assert!(content(NS_B).await.unwrap().is_none());
+    assert!(content(NS_A).await.unwrap().is_some());
 }
 
 #[tokio::test]
@@ -622,4 +628,43 @@ async fn new_org_matched_by_a_rule_is_not_provisioned_until_its_golden_is_ready(
     assert!(r.cluster().pool(NS_A).is_none());
     // No Outpost is created for an org whose pool cannot be written.
     assert!(r.devin().created().is_empty());
+}
+
+#[tokio::test]
+async fn recreated_namespace_gets_a_fresh_snapshot_content() {
+    let devin = MemDevin::default();
+    devin.add_org(ORG_A, "Alpha");
+    let r = reconciler(devin);
+    r.run_pass(t0()).await.unwrap();
+    r.cluster().mark_volume_snapshot_ready(NS_A, GOLDEN);
+    let content_name = format!("{GOLDEN}-{NS_A}");
+    let bound = r
+        .cluster()
+        .get_volume_snapshot_content(&content_name)
+        .await
+        .unwrap();
+    assert!(bound.unwrap().spec.volume_snapshot_ref.uid.is_some());
+    r.cluster().delete_namespace(NS_A).await.unwrap();
+
+    r.run_pass(t0()).await.unwrap();
+    assert!(
+        r.cluster()
+            .get_volume_snapshot_content(&content_name)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    r.run_pass(t0()).await.unwrap();
+    let fresh = r
+        .cluster()
+        .get_volume_snapshot_content(&content_name)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(fresh.spec.volume_snapshot_ref.uid.is_none());
+    assert_eq!(
+        fresh.spec.volume_snapshot_ref.namespace.as_deref(),
+        Some(NS_A)
+    );
 }

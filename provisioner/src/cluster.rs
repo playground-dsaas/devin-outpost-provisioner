@@ -15,7 +15,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::error::Result;
-use crate::render::{FIELD_MANAGER, GOLDEN_VOLUME_NAME, LABEL_MANAGED_BY};
+use crate::render::{FIELD_MANAGER, GOLDEN_VOLUME_NAME, LABEL_MANAGED_BY, LABEL_ORG_ID, org_id_of};
 use crate::snapshot::{VolumeSnapshot, VolumeSnapshotContent};
 
 /// The cluster operations the reconciler needs.
@@ -58,6 +58,9 @@ pub trait Cluster: Send + Sync {
     async fn annotate_namespace(&self, name: &str, key: &str, value: Option<&str>) -> Result<()>;
     /// Delete a pool; missing is not an error.
     async fn delete_pool(&self, namespace: &str, name: &str) -> Result<()>;
+    async fn delete_volume_snapshot_content(&self, name: &str) -> Result<()>;
+    /// Delete every managed `VolumeSnapshotContent` labelled with `org_id`.
+    async fn delete_volume_snapshot_contents_of(&self, org_id: &str) -> Result<()>;
     /// Delete a namespace; missing is not an error.
     async fn delete_namespace(&self, name: &str) -> Result<()>;
 }
@@ -221,6 +224,20 @@ impl Cluster for KubeCluster {
         let api: Api<Namespace> = Api::all(self.client.clone());
         Self::ignore_not_found(api.delete(name, &DeleteParams::default()).await)
     }
+
+    async fn delete_volume_snapshot_content(&self, name: &str) -> Result<()> {
+        let api: Api<VolumeSnapshotContent> = Api::all(self.client.clone());
+        Self::ignore_not_found(api.delete(name, &DeleteParams::default()).await)
+    }
+
+    async fn delete_volume_snapshot_contents_of(&self, org_id: &str) -> Result<()> {
+        let api: Api<VolumeSnapshotContent> = Api::all(self.client.clone());
+        let lp = ListParams::default().labels(&format!(
+            "{LABEL_MANAGED_BY}={FIELD_MANAGER},{LABEL_ORG_ID}={org_id}"
+        ));
+        api.delete_collection(&DeleteParams::default(), &lp).await?;
+        Ok(())
+    }
 }
 
 /// In-memory [`Cluster`] for tests. Namespaces own their pools: deleting a
@@ -361,20 +378,25 @@ impl MemCluster {
     }
 
     /// What the snapshot controller does to a pre-provisioned binding.
+    /// Bind like the snapshot controller: mark the snapshot ready and stamp
+    /// its uid into the content's `volumeSnapshotRef`.
     pub fn mark_volume_snapshot_ready(&self, namespace: &str, name: &str) {
         let mut s = self.inner.lock().unwrap();
-        if let Some(v) = s
+        let uid = format!("uid-{namespace}-{name}");
+        let Some(v) = s
             .snapshots
             .get_mut(&(namespace.to_string(), name.to_string()))
-        {
-            v.status = Some(crate::snapshot::VolumeSnapshotStatus {
-                bound_volume_snapshot_content_name: v
-                    .spec
-                    .source
-                    .volume_snapshot_content_name
-                    .clone(),
-                ready_to_use: Some(true),
-            });
+        else {
+            return;
+        };
+        v.metadata.uid = Some(uid.clone());
+        let content_name = v.spec.source.volume_snapshot_content_name.clone();
+        v.status = Some(crate::snapshot::VolumeSnapshotStatus {
+            bound_volume_snapshot_content_name: content_name.clone(),
+            ready_to_use: Some(true),
+        });
+        if let Some(c) = content_name.and_then(|n| s.contents.get_mut(&n)) {
+            c.spec.volume_snapshot_ref.uid = Some(uid);
         }
     }
 
@@ -620,7 +642,22 @@ impl Cluster for MemCluster {
         s.quotas.retain(|(ns, _), _| ns != name);
         s.limits.retain(|(ns, _), _| ns != name);
         s.policies.retain(|(ns, _), _| ns != name);
+        s.snapshots.retain(|(ns, _), _| ns != name);
         s.secrets.retain(|(ns, _), _| ns != name);
+        Ok(())
+    }
+
+    async fn delete_volume_snapshot_content(&self, name: &str) -> Result<()> {
+        let mut s = self.inner.lock().unwrap();
+        Self::record(&mut s, format!("delete VolumeSnapshotContent/{name}"));
+        s.contents.remove(name);
+        Ok(())
+    }
+
+    async fn delete_volume_snapshot_contents_of(&self, org_id: &str) -> Result<()> {
+        let mut s = self.inner.lock().unwrap();
+        Self::record(&mut s, format!("delete VolumeSnapshotContents of {org_id}"));
+        s.contents.retain(|_, c| org_id_of(c) != Some(org_id));
         Ok(())
     }
 }
