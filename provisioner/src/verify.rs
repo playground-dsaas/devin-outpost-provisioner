@@ -385,7 +385,7 @@ impl<D: DevinApi, C: Cluster> Verifier<D, C> {
                 report.fail(
                     format!("{ns_name}/pool"),
                     format!(
-                        "bound to Outpost {} ({}), which does not carry this install's prefix {:?}: another cluster's Outpost, or the prefix changed since the pool was created; delete the pool so the provisioner rebinds",
+                        "bound to Outpost {} ({}), which does not carry this install's prefix {:?}: another cluster's Outpost, or the prefix changed; the provisioner rebinds on its next pass",
                         o.spec.name, o.metadata.outpost_id, self.settings.outpost_name_prefix
                     ),
                 )

@@ -160,6 +160,31 @@ async fn outpost_restricted_to_org_under_another_prefix_is_not_adopted() {
 }
 
 #[tokio::test]
+async fn recorded_outpost_under_another_prefix_is_rebound() {
+    let devin = MemDevin::default();
+    devin.add_org(ORG_A, "Alpha");
+    let mut other_install = settings();
+    other_install.outpost_name_prefix = "ocp-".into();
+    let r = Reconciler::new(
+        devin,
+        golden_cluster(),
+        template(),
+        other_install,
+        "cog_tok".into(),
+        Metrics::new(),
+    );
+    r.run_pass(t0()).await.unwrap();
+    let (devin, cluster) = r.into_parts();
+    assert_eq!(devin.outposts()[0].spec.name, "ocp-alpha");
+
+    let r = reconciler_on(devin, cluster);
+    let report = r.run_pass(t0()).await.unwrap();
+    assert_eq!(report.outposts_created, 1);
+    assert_eq!(r.cluster().pool(NS_A).unwrap().spec.pool_id, "outpost_2");
+    assert_eq!(r.devin().outposts()[1].spec.name, "eks-alpha");
+}
+
+#[tokio::test]
 async fn same_name_outpost_restricted_to_another_org_is_not_reused() {
     let devin = MemDevin::default();
     devin.add_org(ORG_A, "Alpha");

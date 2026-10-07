@@ -389,10 +389,12 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
     /// Find the Outpost bound to `org`, or create it. Resolution order:
     /// the ID recorded on the existing pool/namespace, an Outpost with this
     /// install's derived name (`outpost_name_prefix` + org slug) that is
-    /// restricted to this org or unrestricted, then create. An Outpost
-    /// restricted to this org under another name belongs to another cluster
-    /// (its own prefix) and is never adopted: two operators on one Outpost
-    /// would both claim its sessions. Returns `None` when Devin rejects
+    /// restricted to this org or unrestricted, then create. Only Outposts
+    /// named with this install's prefix qualify, recorded ones included: an
+    /// Outpost restricted to this org under another prefix belongs to another
+    /// cluster, and two operators on one Outpost would both claim its
+    /// sessions. Changing the prefix therefore rebinds every org to new
+    /// Outposts. Returns `None` when Devin rejects
     /// `allowed_org_ids` for this org: that is how the API reports the
     /// enterprise-level org (and orgs of other accounts), which get no Outpost
     /// or pool.
@@ -409,10 +411,19 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
                 existing_ns.and_then(|n| n.annotations().get(ANNOTATION_OUTPOST_ID).cloned())
             });
         if let Some(id) = recorded_id {
-            if let Some(o) = outposts.iter().find(|o| o.metadata.outpost_id == id) {
-                return Ok(Some((bind(o, org), false)));
+            match outposts.iter().find(|o| o.metadata.outpost_id == id) {
+                Some(o) if o.spec.name.starts_with(&self.settings.outpost_name_prefix) => {
+                    return Ok(Some((bind(o, org), false)));
+                }
+                Some(o) => tracing::warn!(
+                    org_id = %org.org_id, outpost_id = %id, outpost = %o.spec.name,
+                    prefix = %self.settings.outpost_name_prefix,
+                    "recorded Outpost does not carry this install's prefix; rebinding"
+                ),
+                None => {
+                    tracing::warn!(org_id = %org.org_id, outpost_id = %id, "recorded Outpost no longer exists; rebinding")
+                }
             }
-            tracing::warn!(org_id = %org.org_id, outpost_id = %id, "recorded Outpost no longer exists; rebinding");
         }
         let name = naming::outpost_name(&self.settings.outpost_name_prefix, &org.name);
         if let Some(o) = outposts.iter().find(|o| {
