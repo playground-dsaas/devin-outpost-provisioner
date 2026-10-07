@@ -17,6 +17,19 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
     verbs: ["get", "list", "create", "patch"]
+{{- with .Values.poolTemplate.namespace.roleBindings }}
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "list", "create", "patch"]
+  # RBAC only lets a subject bind roles it holds or may `bind`.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ["bind"]
+    resourceNames:
+      {{- range . }}
+      - {{ .clusterRole | quote }}
+      {{- end }}
+{{- end }}
   - apiGroups: ["snapshot.storage.k8s.io"]
     resources: ["volumesnapshots", "volumesnapshotcontents"]
     verbs: ["get", "list", "create", "patch"]

@@ -342,6 +342,9 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
         if let Some(n) = &bundle.network_policy {
             self.cluster.apply_network_policy(n).await?;
         }
+        for b in &bundle.role_bindings {
+            self.cluster.apply_role_binding(b).await?;
+        }
         self.cluster
             .apply_secret(&render::render_token_secret(org, ns_name, &self.token))
             .await?;

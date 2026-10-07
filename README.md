@@ -165,11 +165,12 @@ The pool template is validated by the provisioner's tests
 
 - Provisioner and operator run under `restricted-v2` as is (`values-openshift.yaml`
   unsets the fixed uid so the SCC can assign one).
-- Worker pods run as uid 1000 (the image's user). Each org namespace's
-  `default` ServiceAccount needs an SCC that allows that uid, e.g.
-  `oc adm policy add-scc-to-user anyuid -z default -n <org namespace>`.
-  The provisioner does not grant SCCs yet; adding a RoleBinding to the
-  objects it creates per namespace is the natural place for it.
+- Worker pods run as uid 1000 (the image's user), which `restricted-v2`
+  rejects. `values-openshift.yaml` sets `poolTemplate.namespace.roleBindings`
+  so the provisioner binds `system:openshift:scc:nonroot-v2` to every
+  ServiceAccount of each org namespace as it creates it; no `oc adm policy`
+  step per org. Use a custom SCC's `system:openshift:scc:<name>` ClusterRole
+  instead if `nonroot-v2` is not allowed.
 - The default NetworkPolicy's DNS rule targets `kube-system`/`kube-dns`;
   OpenShift's resolver is in `openshift-dns`. `values-openshift.yaml` uses an
   allow-all egress instead; tighten to taste.
@@ -191,8 +192,8 @@ No cluster needed, and what CI runs on every change:
 This layout (operator and provisioner in one system namespace, a namespace and
 pool per org, golden home volumes per image, per-org image rules, sleep/wake
 persistence) has been run end to end from these charts on an EKS cluster. It
-has not yet been installed on OpenShift; the SCC, CSI snapshot and DNS points
-above are the known differences.
+has not yet been installed on OpenShift; the SCC binding, CSI snapshot and DNS
+points above are the known differences.
 
 ## Upstream
 

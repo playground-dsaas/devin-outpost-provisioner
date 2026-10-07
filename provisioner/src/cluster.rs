@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use devin_outposts_k8s::crd::OutpostPool;
 use k8s_openapi::api::core::v1::{LimitRange, Namespace, ResourceQuota, Secret};
 use k8s_openapi::api::networking::v1::NetworkPolicy;
+use k8s_openapi::api::rbac::v1::RoleBinding;
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
 use kube::{Api, Client, Resource, ResourceExt};
 use serde::Serialize;
@@ -29,6 +30,7 @@ pub trait Cluster: Send + Sync {
     async fn apply_resource_quota(&self, obj: &ResourceQuota) -> Result<()>;
     async fn apply_limit_range(&self, obj: &LimitRange) -> Result<()>;
     async fn apply_network_policy(&self, obj: &NetworkPolicy) -> Result<()>;
+    async fn apply_role_binding(&self, obj: &RoleBinding) -> Result<()>;
     async fn apply_secret(&self, obj: &Secret) -> Result<()>;
     async fn apply_volume_snapshot_content(&self, obj: &VolumeSnapshotContent) -> Result<()>;
     async fn apply_volume_snapshot(&self, obj: &VolumeSnapshot) -> Result<()>;
@@ -129,6 +131,10 @@ impl Cluster for KubeCluster {
         self.apply(obj).await
     }
 
+    async fn apply_role_binding(&self, obj: &RoleBinding) -> Result<()> {
+        self.apply(obj).await
+    }
+
     async fn apply_secret(&self, obj: &Secret) -> Result<()> {
         self.apply(obj).await
     }
@@ -202,6 +208,7 @@ struct MemState {
     quotas: BTreeMap<(String, String), ResourceQuota>,
     limits: BTreeMap<(String, String), LimitRange>,
     policies: BTreeMap<(String, String), NetworkPolicy>,
+    role_bindings: BTreeMap<(String, String), RoleBinding>,
     secrets: BTreeMap<(String, String), Secret>,
     snapshots: BTreeMap<(String, String), VolumeSnapshot>,
     contents: BTreeMap<String, VolumeSnapshotContent>,
@@ -323,6 +330,15 @@ impl MemCluster {
         s.policies.keys().any(|(ns, _)| ns == namespace)
     }
 
+    pub fn role_bindings(&self, namespace: &str) -> Vec<RoleBinding> {
+        let s = self.inner.lock().unwrap();
+        s.role_bindings
+            .iter()
+            .filter(|((ns, _), _)| ns == namespace)
+            .map(|(_, b)| b.clone())
+            .collect()
+    }
+
     pub fn namespace_names(&self) -> Vec<String> {
         self.inner
             .lock()
@@ -422,6 +438,13 @@ impl Cluster for MemCluster {
         let mut s = self.inner.lock().unwrap();
         Self::record(&mut s, format!("apply NetworkPolicy/{}", obj.name_any()));
         s.policies.insert(key(obj), obj.clone());
+        Ok(())
+    }
+
+    async fn apply_role_binding(&self, obj: &RoleBinding) -> Result<()> {
+        let mut s = self.inner.lock().unwrap();
+        Self::record(&mut s, format!("apply RoleBinding/{}", obj.name_any()));
+        s.role_bindings.insert(key(obj), obj.clone());
         Ok(())
     }
 

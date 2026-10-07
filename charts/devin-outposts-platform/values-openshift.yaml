@@ -3,9 +3,8 @@
 # left unset; the operator chart sets no securityContext, so restricted-v2
 # applies to it unchanged.
 #
-# Worker pods run as uid 1000 and need an SCC that allows it (anyuid, or a
-# custom SCC) bound to the `default` ServiceAccount of each org namespace. The
-# provisioner does not grant SCCs yet; see README.md.
+# Worker pods run as uid 1000 (non-root, no capabilities): the provisioner
+# binds the nonroot-v2 SCC to every org namespace (roleBindings below).
 operator:
   image:
     repository: registry.example.com/devin/devin-outpost-k8s
@@ -33,6 +32,9 @@ poolTemplate:
       overrides:
         image: registry.example.com/devin/devin-outpost-prod:release-a0f71d0e6a-20261005061956
   namespace:
+    roleBindings:
+      - name: scc-nonroot-v2
+        clusterRole: system:openshift:scc:nonroot-v2
     networkPolicy:
       ingress: []
       egress:
