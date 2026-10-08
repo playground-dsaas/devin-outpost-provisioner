@@ -15,6 +15,7 @@
 //! - [`render`]    — Kubernetes objects for one org
 //! - [`snapshot`]  — `VolumeSnapshot`/`VolumeSnapshotContent` types for the golden volume
 //! - [`reconcile`] — the pass itself
+//! - [`verify`]    — the acceptance checklist (`org-provisioner verify`, run by `helm test`)
 //! - [`metrics`], [`token`], [`config`], [`error`]
 
 pub mod cluster;
@@ -29,5 +30,6 @@ pub mod render;
 pub mod snapshot;
 pub mod template;
 pub mod token;
+pub mod verify;
 
 pub use error::{Error, Result};

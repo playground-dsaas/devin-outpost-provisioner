@@ -1,146 +1,20 @@
 //! Reconcile-pass behaviour against an in-memory Devin account and cluster.
 
-use std::collections::BTreeSet;
-use std::sync::Mutex;
 use std::time::Duration;
 
-use async_trait::async_trait;
-use chrono::{DateTime, TimeZone, Utc};
 use kube::ResourceExt;
-use org_provisioner::cluster::MemCluster;
-use org_provisioner::devin::{
-    CreateOutpost, DevinApi, Organization, Outpost, OutpostMetadata, OutpostSpec,
-};
+use org_provisioner::Error;
+use org_provisioner::cluster::{Cluster, MemCluster};
+use org_provisioner::devin::{CreateOutpost, DefaultPlatform, DevinApi};
 use org_provisioner::images::WorkerImages;
 use org_provisioner::metrics::Metrics;
 use org_provisioner::naming::{TOKEN_SECRET_KEY, TOKEN_SECRET_NAME};
-use org_provisioner::reconcile::{PassReport, Reconciler, Settings};
+use org_provisioner::reconcile::{PassReport, Reconciler};
 use org_provisioner::render::{
-    ANNOTATION_DEFAULT_PLATFORM, ANNOTATION_ORPHANED_SINCE, ANNOTATION_OUTPOST_ID,
-    ANNOTATION_OUTPOST_RESTRICTED, LABEL_ORG_SLUG,
+    ANNOTATION_ORPHANED_SINCE, ANNOTATION_OUTPOST_ID, ANNOTATION_OUTPOST_RESTRICTED, LABEL_ORG_SLUG,
 };
-use org_provisioner::template::PoolTemplate;
-use org_provisioner::{Error, Result};
-
-const ORG_A: &str = "org-aaaaaaaa11111111aaaaaaaa11111111";
-const ORG_B: &str = "org-bbbbbbbb22222222bbbbbbbb22222222";
-const NS_A: &str = "devin-org-aaaaaaaa1111";
-const NS_B: &str = "devin-org-bbbbbbbb2222";
-const GRACE: Duration = Duration::from_secs(3600);
-
-/// In-memory Devin account.
-#[derive(Default)]
-struct MemDevin {
-    orgs: Mutex<Vec<Organization>>,
-    outposts: Mutex<Vec<Outpost>>,
-    /// Org IDs the account rejects in `allowed_org_ids`.
-    foreign_orgs: Mutex<BTreeSet<String>>,
-    fail_org_list: Mutex<bool>,
-    created: Mutex<Vec<CreateOutpost>>,
-    deleted: Mutex<Vec<String>>,
-    counter: Mutex<u32>,
-}
-
-impl MemDevin {
-    fn add_org(&self, id: &str, name: &str) {
-        self.orgs.lock().unwrap().push(Organization {
-            org_id: id.into(),
-            name: name.into(),
-            created_at: None,
-            updated_at: None,
-        });
-    }
-    fn remove_org(&self, id: &str) {
-        self.orgs.lock().unwrap().retain(|o| o.org_id != id);
-    }
-    fn outposts(&self) -> Vec<Outpost> {
-        self.outposts.lock().unwrap().clone()
-    }
-    fn created(&self) -> Vec<CreateOutpost> {
-        self.created.lock().unwrap().clone()
-    }
-    fn deleted(&self) -> Vec<String> {
-        self.deleted.lock().unwrap().clone()
-    }
-}
-
-#[async_trait]
-impl DevinApi for MemDevin {
-    async fn list_organizations(&self) -> Result<Vec<Organization>> {
-        if *self.fail_org_list.lock().unwrap() {
-            return Err(Error::Api {
-                status: 503,
-                body: "unavailable".into(),
-            });
-        }
-        Ok(self.orgs.lock().unwrap().clone())
-    }
-    async fn list_outposts(&self) -> Result<Vec<Outpost>> {
-        Ok(self.outposts())
-    }
-    async fn create_outpost(&self, req: &CreateOutpost) -> Result<Outpost> {
-        self.created.lock().unwrap().push(req.clone());
-        if let Some(ids) = &req.allowed_org_ids {
-            let foreign = self.foreign_orgs.lock().unwrap();
-            let bad: Vec<&String> = ids.iter().filter(|id| foreign.contains(*id)).collect();
-            if !bad.is_empty() {
-                return Err(Error::InvalidOrgIds(format!(
-                    "Invalid organization IDs: {bad:?}"
-                )));
-            }
-        }
-        let mut n = self.counter.lock().unwrap();
-        *n += 1;
-        let outpost = Outpost {
-            metadata: OutpostMetadata {
-                outpost_id: format!("outpost_{n}"),
-                account_id: None,
-                created_at: None,
-            },
-            spec: OutpostSpec {
-                name: req.name.clone(),
-                platform: None,
-                description: req.description.clone(),
-                allowed_org_ids: req.allowed_org_ids.clone(),
-            },
-        };
-        self.outposts.lock().unwrap().push(outpost.clone());
-        Ok(outpost)
-    }
-    async fn delete_outpost(&self, outpost_id: &str) -> Result<()> {
-        self.deleted.lock().unwrap().push(outpost_id.into());
-        self.outposts
-            .lock()
-            .unwrap()
-            .retain(|o| o.metadata.outpost_id != outpost_id);
-        Ok(())
-    }
-}
-
-fn settings() -> Settings {
-    Settings {
-        api_url: "https://api.devin.ai".into(),
-        namespace_prefix: "devin-org-".into(),
-        outpost_name_prefix: "eks-".into(),
-        exclude_org_ids: BTreeSet::new(),
-        deprovision_grace: GRACE,
-        system_namespace: "devin-system".into(),
-    }
-}
-
-const GOLDEN: &str = "worker-home";
-
-fn template() -> PoolTemplate {
-    PoolTemplate::parse_helm_values(&[
-        include_str!("../../charts/devin-outposts-platform/values.yaml"),
-        include_str!("../../charts/devin-outposts-platform/values-openshift.yaml"),
-    ])
-    .unwrap()
-}
-
-fn worker_image() -> String {
-    template().pool.worker.overrides.image.unwrap()
-}
+mod common;
+use common::*;
 
 fn reconciler_on(devin: MemDevin, cluster: MemCluster) -> Reconciler<MemDevin, MemCluster> {
     Reconciler::new(
@@ -153,20 +27,8 @@ fn reconciler_on(devin: MemDevin, cluster: MemCluster) -> Reconciler<MemDevin, M
     )
 }
 
-/// A cluster where `make golden-snapshot` has already run for the template's
-/// worker image.
-fn golden_cluster() -> MemCluster {
-    let cluster = MemCluster::default();
-    cluster.add_golden_snapshot("devin-system", GOLDEN, &worker_image(), "snap-golden", true);
-    cluster
-}
-
 fn reconciler(devin: MemDevin) -> Reconciler<MemDevin, MemCluster> {
     reconciler_on(devin, golden_cluster())
-}
-
-fn t0() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap()
 }
 
 #[tokio::test]
@@ -182,7 +44,6 @@ async fn provisions_new_org_end_to_end() {
             organizations: 1,
             provisioned: 1,
             outposts_created: 1,
-            pending_default_platform: 1,
             ..Default::default()
         }
     );
@@ -217,7 +78,10 @@ async fn provisions_new_org_end_to_end() {
     let pool = c.pool(NS_A).expect("pool created");
     assert_eq!(pool.spec.pool_id, "outpost_1");
     assert_eq!(pool.spec.token_secret_ref.name, TOKEN_SECRET_NAME);
-    assert_eq!(pool.annotations()[ANNOTATION_DEFAULT_PLATFORM], "pending");
+    assert_eq!(
+        r.devin().default_platform(ORG_A).outpost_pool_id.as_deref(),
+        Some("outpost_1")
+    );
 }
 
 #[tokio::test]
@@ -278,6 +142,50 @@ async fn rebinds_existing_outpost_without_creating() {
 }
 
 #[tokio::test]
+async fn outpost_restricted_to_org_under_another_prefix_is_not_adopted() {
+    let devin = MemDevin::default();
+    devin.add_org(ORG_A, "Alpha");
+    devin
+        .create_outpost(&CreateOutpost {
+            name: "other-cluster-alpha".into(),
+            description: None,
+            allowed_org_ids: Some(vec![ORG_A.into()]),
+        })
+        .await
+        .unwrap();
+    let r = reconciler(devin);
+    let report = r.run_pass(t0()).await.unwrap();
+    assert_eq!(report.outposts_created, 1);
+    assert_eq!(r.cluster().pool(NS_A).unwrap().spec.pool_id, "outpost_2");
+    assert_eq!(r.devin().outposts()[1].spec.name, "eks-alpha");
+}
+
+#[tokio::test]
+async fn recorded_outpost_under_another_prefix_is_rebound() {
+    let devin = MemDevin::default();
+    devin.add_org(ORG_A, "Alpha");
+    let mut other_install = settings();
+    other_install.outpost_name_prefix = "ocp-".into();
+    let r = Reconciler::new(
+        devin,
+        golden_cluster(),
+        template(),
+        other_install,
+        "cog_tok".into(),
+        Metrics::new(),
+    );
+    r.run_pass(t0()).await.unwrap();
+    let (devin, cluster) = r.into_parts();
+    assert_eq!(devin.outposts()[0].spec.name, "ocp-alpha");
+
+    let r = reconciler_on(devin, cluster);
+    let report = r.run_pass(t0()).await.unwrap();
+    assert_eq!(report.outposts_created, 1);
+    assert_eq!(r.cluster().pool(NS_A).unwrap().spec.pool_id, "outpost_2");
+    assert_eq!(r.devin().outposts()[1].spec.name, "eks-alpha");
+}
+
+#[tokio::test]
 async fn same_name_outpost_restricted_to_another_org_is_not_reused() {
     let devin = MemDevin::default();
     devin.add_org(ORG_A, "Alpha");
@@ -311,7 +219,6 @@ async fn skips_org_devin_will_not_restrict_to() {
             provisioned: 1,
             skipped: 1,
             outposts_created: 1,
-            pending_default_platform: 1,
             ..Default::default()
         }
     );
@@ -426,6 +333,23 @@ async fn removed_org_is_marked_then_deleted_after_grace() {
     assert!(r.cluster().namespace(NS_B).is_none());
     assert_eq!(r.cluster().namespace_names(), vec![NS_A]);
     assert!(r.cluster().pool(NS_A).is_some());
+    let content_b = format!("{GOLDEN}-{NS_B}");
+    let content_a = format!("{GOLDEN}-{NS_A}");
+    let cluster = r.cluster();
+    assert!(
+        cluster
+            .get_volume_snapshot_content(&content_b)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        cluster
+            .get_volume_snapshot_content(&content_a)
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -488,25 +412,52 @@ async fn empty_org_list_never_deprovisions() {
 }
 
 #[tokio::test]
-async fn manual_default_platform_flag_survives_reconcile() {
+async fn default_platform_is_set_once_and_never_overrides_a_choice() {
     let devin = MemDevin::default();
     devin.add_org(ORG_A, "Alpha");
     let r = reconciler(devin);
-    r.run_pass(t0()).await.unwrap();
-
-    let mut pool = r.cluster().pool(NS_A).unwrap();
-    pool.annotations_mut()
-        .insert(ANNOTATION_DEFAULT_PLATFORM.into(), "set".into());
-    org_provisioner::cluster::Cluster::apply_pool(r.cluster(), &pool)
-        .await
-        .unwrap();
-
     let report = r.run_pass(t0()).await.unwrap();
-    assert_eq!(report.pending_default_platform, 0);
+    assert_eq!(report.errors, 0);
+    let pool_id = r.cluster().pool(NS_A).unwrap().spec.pool_id.clone();
     assert_eq!(
-        r.cluster().pool(NS_A).unwrap().annotations()[ANNOTATION_DEFAULT_PLATFORM],
-        "set"
+        r.devin().default_platform(ORG_A).outpost_pool_id.as_deref(),
+        Some(pool_id.as_str())
     );
+
+    // Someone points the org elsewhere: left alone.
+    r.devin().set_default_platform_to(
+        ORG_A,
+        DefaultPlatform {
+            platform: Some("linux".into()),
+            ..Default::default()
+        },
+    );
+    let report = r.run_pass(t0()).await.unwrap();
+    assert_eq!(report.errors, 0);
+    assert_eq!(
+        r.devin().default_platform(ORG_A).platform.as_deref(),
+        Some("linux")
+    );
+}
+
+#[tokio::test]
+async fn default_platform_refusal_is_a_reconcile_error_but_the_pool_still_exists() {
+    let devin = MemDevin::default();
+    devin.add_org(ORG_A, "Alpha");
+    *devin.forbid_default_platform.lock().unwrap() = true;
+    let r = reconciler(devin);
+    let report = r.run_pass(t0()).await.unwrap();
+    assert_eq!(report.provisioned, 0);
+    assert_eq!(report.errors, 1);
+    assert!(r.cluster().pool(NS_A).is_some());
+    assert!(r.devin().default_platform(ORG_A).is_unset());
+
+    // Once the token can set it, the next pass does.
+    *r.devin().forbid_default_platform.lock().unwrap() = false;
+    let report = r.run_pass(t0()).await.unwrap();
+    assert_eq!(report.errors, 0);
+    assert_eq!(report.provisioned, 1);
+    assert!(!r.devin().default_platform(ORG_A).is_unset());
 }
 
 #[tokio::test]
@@ -715,4 +666,43 @@ async fn new_org_matched_by_a_rule_is_not_provisioned_until_its_golden_is_ready(
     assert!(r.cluster().pool(NS_A).is_none());
     // No Outpost is created for an org whose pool cannot be written.
     assert!(r.devin().created().is_empty());
+}
+
+#[tokio::test]
+async fn recreated_namespace_gets_a_fresh_snapshot_content() {
+    let devin = MemDevin::default();
+    devin.add_org(ORG_A, "Alpha");
+    let r = reconciler(devin);
+    r.run_pass(t0()).await.unwrap();
+    r.cluster().mark_volume_snapshot_ready(NS_A, GOLDEN);
+    let content_name = format!("{GOLDEN}-{NS_A}");
+    let bound = r
+        .cluster()
+        .get_volume_snapshot_content(&content_name)
+        .await
+        .unwrap();
+    assert!(bound.unwrap().spec.volume_snapshot_ref.uid.is_some());
+    r.cluster().delete_namespace(NS_A).await.unwrap();
+
+    r.run_pass(t0()).await.unwrap();
+    assert!(
+        r.cluster()
+            .get_volume_snapshot_content(&content_name)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    r.run_pass(t0()).await.unwrap();
+    let fresh = r
+        .cluster()
+        .get_volume_snapshot_content(&content_name)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(fresh.spec.volume_snapshot_ref.uid.is_none());
+    assert_eq!(
+        fresh.spec.volume_snapshot_ref.namespace.as_deref(),
+        Some(NS_A)
+    );
 }

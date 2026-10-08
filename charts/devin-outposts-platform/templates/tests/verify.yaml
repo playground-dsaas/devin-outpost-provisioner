@@ -1,0 +1,64 @@
+{{- if and .Values.provisioner.enabled .Values.provisioner.test.enabled }}
+{{- $p := .Values.provisioner }}
+# `helm test <release>`: `org-provisioner verify` (provisioner/src/verify.rs)
+# with the Deployment's ServiceAccount, token and ConfigMaps.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "platform.provisioner.name" . }}-verify
+  namespace: {{ .Release.Namespace }}
+  labels:
+    helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
+    # Not the Deployment's selector labels: its ReplicaSet would adopt the Pod.
+    app.kubernetes.io/name: {{ include "platform.provisioner.name" . }}-verify
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    helm.sh/hook: test
+    # A failed Pod stays for `kubectl logs`; the next `helm test` replaces it.
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  restartPolicy: Never
+  serviceAccountName: {{ include "platform.provisioner.serviceAccountName" . }}
+  automountServiceAccountToken: true
+  enableServiceLinks: false
+  {{- with $p.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $p.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $p.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $p.podSecurityContext }}
+  securityContext:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  containers:
+    - name: verify
+      image: "{{ $p.image.repository }}:{{ $p.image.tag }}"
+      imagePullPolicy: {{ $p.image.pullPolicy }}
+      args: ["verify"]
+      env:
+        {{- include "platform.provisioner.env" . | nindent 8 }}
+        - name: VERIFY_TIMEOUT_SECONDS
+          value: {{ $p.test.timeoutSeconds | quote }}
+        - name: VERIFY_INTERVAL_SECONDS
+          value: {{ $p.test.intervalSeconds | quote }}
+      {{- with $p.resources }}
+      resources:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $p.securityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumeMounts:
+        {{- include "platform.provisioner.volumeMounts" . | nindent 8 }}
+  volumes:
+    {{- include "platform.provisioner.volumes" . | nindent 4 }}
+{{- end }}

@@ -1,5 +1,6 @@
-//! Devin API access: enterprise organizations (`/v3/enterprise/organizations`)
-//! and Outposts (`/opbeta/outposts`).
+//! Devin API access: enterprise organizations (`/v3/enterprise/organizations`),
+//! Outposts (`/opbeta/outposts`) and the per-org default platform
+//! (`/v3beta1/organizations/{org_id}/default-platform`).
 //!
 //! Both list endpoints use the same cursor envelope (`items`, `end_cursor`,
 //! `has_next_page`) and take `first` (page size) + `after` (cursor).
@@ -79,6 +80,39 @@ pub struct CreateOutpost {
     pub allowed_org_ids: Option<Vec<String>>,
 }
 
+/// An organization's default session placement: a hosted `platform` label
+/// or an Outpost, all `None` when unset. `PUT` takes at most one of the two
+/// and needs `ManageOrgSettings` on the org.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DefaultPlatform {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outpost_pool_id: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub outpost_pool_name: Option<String>,
+}
+
+impl DefaultPlatform {
+    pub fn is_unset(&self) -> bool {
+        self.platform.is_none() && self.outpost_pool_id.is_none()
+    }
+
+    /// Human-readable target, for logs and the verify report.
+    pub fn describe(&self) -> String {
+        match (
+            &self.platform,
+            &self.outpost_pool_name,
+            &self.outpost_pool_id,
+        ) {
+            (Some(p), _, _) => format!("hosted platform {p}"),
+            (None, Some(n), Some(id)) => format!("Outpost {n} ({id})"),
+            (None, None, Some(id)) => format!("Outpost {id}"),
+            _ => "unset".to_string(),
+        }
+    }
+}
+
 /// The subset of the Devin API the reconciler needs. Implemented by
 /// [`DevinClient`] and by in-memory fakes in tests.
 #[async_trait]
@@ -92,6 +126,9 @@ pub trait DevinApi: Send + Sync {
     async fn create_outpost(&self, req: &CreateOutpost) -> Result<Outpost>;
     /// Delete an Outpost. A missing Outpost is not an error.
     async fn delete_outpost(&self, outpost_id: &str) -> Result<()>;
+    async fn get_default_platform(&self, org_id: &str) -> Result<DefaultPlatform>;
+    /// Point the org's default placement at an Outpost.
+    async fn set_default_platform(&self, org_id: &str, outpost_id: &str) -> Result<()>;
 }
 
 /// HTTP implementation of [`DevinApi`] bound to one token + base URL.
@@ -217,6 +254,33 @@ impl DevinApi for DevinClient {
         if resp.status().as_u16() == 404 {
             return Ok(());
         }
+        Self::check(resp).await.map(|_| ())
+    }
+
+    async fn get_default_platform(&self, org_id: &str) -> Result<DefaultPlatform> {
+        let resp = self
+            .http
+            .get(self.url(&format!("/v3beta1/organizations/{org_id}/default-platform")))
+            .bearer_auth(&self.token)
+            .timeout(REQUEST_TIMEOUT)
+            .send()
+            .await?;
+        Ok(Self::check(resp).await?.json().await?)
+    }
+
+    async fn set_default_platform(&self, org_id: &str, outpost_id: &str) -> Result<()> {
+        let body = DefaultPlatform {
+            outpost_pool_id: Some(outpost_id.to_string()),
+            ..Default::default()
+        };
+        let resp = self
+            .http
+            .put(self.url(&format!("/v3beta1/organizations/{org_id}/default-platform")))
+            .bearer_auth(&self.token)
+            .timeout(REQUEST_TIMEOUT)
+            .json(&body)
+            .send()
+            .await?;
         Self::check(resp).await.map(|_| ())
     }
 }

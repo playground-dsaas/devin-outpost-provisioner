@@ -26,9 +26,8 @@ use crate::images::WorkerImages;
 use crate::metrics::Metrics;
 use crate::naming::{self, POOL_NAME};
 use crate::render::{
-    self, ANNOTATION_DEFAULT_PLATFORM, ANNOTATION_ORPHANED_SINCE, ANNOTATION_OUTPOST_ID,
-    ANNOTATION_OUTPOST_RESTRICTED, ANNOTATION_WORKER_IMAGE, BoundOutpost, GoldenSnapshot,
-    RenderInput,
+    self, ANNOTATION_ORPHANED_SINCE, ANNOTATION_OUTPOST_ID, ANNOTATION_OUTPOST_RESTRICTED,
+    ANNOTATION_WORKER_IMAGE, BoundOutpost, GoldenSnapshot, RenderInput,
 };
 use crate::snapshot::VolumeSnapshot;
 use crate::template::PoolTemplate;
@@ -65,8 +64,6 @@ pub struct PassReport {
     pub deleting: usize,
     /// Namespaces (and their Outposts) deleted this pass.
     pub deleted: usize,
-    /// Provisioned orgs still awaiting the manual default-platform step.
-    pub pending_default_platform: usize,
 }
 
 /// Reconciles organizations into namespaces, pools and Outposts.
@@ -116,6 +113,10 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
 
     pub fn devin(&self) -> &D {
         &self.devin
+    }
+
+    pub fn into_parts(self) -> (D, C) {
+        (self.devin, self.cluster)
     }
 
     /// Run one pass at `now`. Fails only when the inputs (org list, Outpost
@@ -184,8 +185,6 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
                 Ok(Some(outcome)) => {
                     report.provisioned += 1;
                     report.outposts_created += usize::from(outcome.created_outpost);
-                    report.pending_default_platform +=
-                        usize::from(outcome.default_platform_pending);
                 }
                 Ok(None) => report.skipped += 1,
                 Err(err) => {
@@ -312,9 +311,6 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
             return Ok(None);
         };
 
-        let default_platform = existing_pool
-            .and_then(|p| p.annotations().get(ANNOTATION_DEFAULT_PLATFORM))
-            .map(String::as_str);
         let bundle = render::render(&RenderInput {
             org,
             namespace: ns_name,
@@ -322,7 +318,6 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
             api_url: &self.settings.api_url,
             template: &self.template,
             image,
-            default_platform,
             golden: &golden,
         });
 
@@ -351,43 +346,97 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
         // Created once, never re-applied: `spec.volumeSnapshotRef` is atomic
         // and the snapshot controller stamps the bound snapshot's uid into it;
         // re-applying would strip the uid and the CSI provisioner would refuse
-        // to restore from it ("bound to a different snapshot").
+        // to restore from it ("bound to a different snapshot"). The content is
+        // cluster-scoped, so it outlives a deleted namespace: one bound to a
+        // VolumeSnapshot uid that no longer exists is deleted here and created
+        // afresh on the next pass, once its finalizers have run.
         let content = &bundle.volume_snapshot_content;
-        if self
+        let content_name = content.name_any();
+        let existing = self
             .cluster
-            .get_volume_snapshot_content(&content.name_any())
-            .await?
-            .is_none()
-        {
-            self.cluster.apply_volume_snapshot_content(content).await?;
+            .get_volume_snapshot_content(&content_name)
+            .await?;
+        let bound_uid = existing
+            .as_ref()
+            .and_then(|c| c.spec.volume_snapshot_ref.uid.as_deref());
+        match (existing.is_some(), bound_uid) {
+            (false, _) => self.cluster.apply_volume_snapshot_content(content).await?,
+            (true, None) => {}
+            (true, Some(bound_uid)) => {
+                let current = self
+                    .cluster
+                    .get_volume_snapshot(ns_name, &bundle.volume_snapshot.name_any())
+                    .await?;
+                if current.as_ref().and_then(|v| v.metadata.uid.as_deref()) != Some(bound_uid) {
+                    tracing::warn!(namespace = %ns_name, content = %content_name, "VolumeSnapshotContent is bound to a VolumeSnapshot that no longer exists; replacing");
+                    self.cluster
+                        .delete_volume_snapshot_content(&content_name)
+                        .await?;
+                }
+            }
         }
         self.cluster
             .apply_volume_snapshot(&bundle.volume_snapshot)
             .await?;
         self.cluster.apply_pool(&bundle.pool).await?;
 
-        let pending = default_platform.is_none_or(|v| v == "pending");
         if existing_pool.is_none() {
-            tracing::warn!(
+            tracing::info!(
                 org_id = %org.org_id,
                 org = %org.name,
                 namespace = %ns_name,
                 outpost_id = %outpost.outpost_id,
-                "provisioned new organization; set its default platform to this Outpost in the Devin UI (no API yet)"
+                "provisioned new organization"
             );
         }
+        self.ensure_default_platform(org, &outpost.outpost_id)
+            .await?;
         Ok(Some(OrgOutcome {
             created_outpost: created,
-            default_platform_pending: pending,
         }))
     }
 
+    /// Point the org's default session placement at its Outpost when none is
+    /// set, so its sessions land here without a UI step. A default that already
+    /// points elsewhere (another cluster's Outpost, a hosted platform) is a
+    /// choice and is left alone. Runs after the pool is applied: an API refusal
+    /// (the token needs `ManageOrgSettings`) is this org's reconcile error for
+    /// the pass, not a reason to leave it without a pool.
+    async fn ensure_default_platform(&self, org: &Organization, outpost_id: &str) -> Result<()> {
+        let current = self.devin.get_default_platform(&org.org_id).await?;
+        if current.outpost_pool_id.as_deref() == Some(outpost_id) {
+            return Ok(());
+        }
+        if !current.is_unset() {
+            tracing::debug!(org_id = %org.org_id, org = %org.name, current = %current.describe(), "org default platform is not this Outpost; leaving it");
+            return Ok(());
+        }
+        self.devin
+            .set_default_platform(&org.org_id, outpost_id)
+            .await
+            .map_err(|e| match e {
+                Error::Api { status, body } => Error::Api {
+                    status,
+                    body: format!("setting the org default platform (the token needs ManageOrgSettings): {body}"),
+                },
+                e => e,
+            })?;
+        tracing::info!(org_id = %org.org_id, org = %org.name, outpost_id, "org default platform set to its Outpost");
+        Ok(())
+    }
+
     /// Find the Outpost bound to `org`, or create it. Resolution order:
-    /// the ID recorded on the existing pool/namespace, an Outpost restricted to
-    /// exactly this org, an unrestricted Outpost with the derived name, then
-    /// create. Returns `None` when Devin rejects `allowed_org_ids` for this
-    /// org: that is how the API reports the enterprise-level org (and orgs of
-    /// other accounts), which get no Outpost or pool.
+    /// the ID recorded on the existing pool/namespace, an Outpost with this
+    /// install's derived name (`outpost_name_prefix` + org slug) that is
+    /// restricted to this org or unrestricted, then create. Only Outposts
+    /// named with this install's prefix qualify, recorded ones included: an
+    /// Outpost restricted to this org under another prefix belongs to another
+    /// cluster, and two operators on one Outpost would both claim its
+    /// sessions. Changing the prefix therefore rebinds every org to new
+    /// Outposts. Returns `None` when Devin rejects
+    /// `allowed_org_ids` for this org: that is how the API reports the
+    /// enterprise-level org (and orgs of other accounts), which get no Outpost
+    /// or pool.
     async fn ensure_outpost(
         &self,
         org: &Organization,
@@ -401,20 +450,27 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
                 existing_ns.and_then(|n| n.annotations().get(ANNOTATION_OUTPOST_ID).cloned())
             });
         if let Some(id) = recorded_id {
-            if let Some(o) = outposts.iter().find(|o| o.metadata.outpost_id == id) {
-                return Ok(Some((bind(o, org), false)));
+            match outposts.iter().find(|o| o.metadata.outpost_id == id) {
+                Some(o) if o.spec.name.starts_with(&self.settings.outpost_name_prefix) => {
+                    return Ok(Some((bind(o, org), false)));
+                }
+                Some(o) => tracing::warn!(
+                    org_id = %org.org_id, outpost_id = %id, outpost = %o.spec.name,
+                    prefix = %self.settings.outpost_name_prefix,
+                    "recorded Outpost does not carry this install's prefix; rebinding"
+                ),
+                None => {
+                    tracing::warn!(org_id = %org.org_id, outpost_id = %id, "recorded Outpost no longer exists; rebinding")
+                }
             }
-            tracing::warn!(org_id = %org.org_id, outpost_id = %id, "recorded Outpost no longer exists; rebinding");
-        }
-        if let Some(o) = outposts
-            .iter()
-            .find(|o| o.spec.allowed_org_ids.as_deref() == Some(std::slice::from_ref(&org.org_id)))
-        {
-            return Ok(Some((bind(o, org), false)));
         }
         let name = naming::outpost_name(&self.settings.outpost_name_prefix, &org.name);
         if let Some(o) = outposts.iter().find(|o| {
-            o.spec.name == name && o.spec.allowed_org_ids.as_ref().is_none_or(Vec::is_empty)
+            o.spec.name == name
+                && match o.spec.allowed_org_ids.as_deref() {
+                    None | Some([]) => true,
+                    Some(ids) => ids == [org.org_id.clone()],
+                }
         }) {
             return Ok(Some((bind(o, org), false)));
         }
@@ -489,6 +545,12 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
         }
         tracing::warn!(namespace = %name, "deleting namespace");
         self.cluster.delete_namespace(&name).await?;
+        // Cluster-scoped, so not swept by the namespace deletion.
+        if let Some(org_id) = render::org_id_of(ns) {
+            self.cluster
+                .delete_volume_snapshot_contents_of(org_id)
+                .await?;
+        }
         self.metrics
             .deletions
             .get_or_create(&crate::metrics::KindLabel::namespace())
@@ -511,7 +573,6 @@ fn bind(o: &Outpost, org: &Organization) -> BoundOutpost {
 
 struct OrgOutcome {
     created_outpost: bool,
-    default_platform_pending: bool,
 }
 
 enum Deprovision {

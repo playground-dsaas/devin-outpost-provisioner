@@ -125,6 +125,14 @@ provisioner:
   metrics:
     service:
       enabled: true
+  # `helm test <release> -n <ns> --logs`: a Pod running `org-provisioner verify`
+  # with the Deployment's configuration. It re-checks every intervalSeconds
+  # until every check passes or timeoutSeconds elapse (keep that under helm's
+  # --timeout, 5m by default), then prints the checklist and fails on any FAIL.
+  test:
+    enabled: true
+    timeoutSeconds: 240
+    intervalSeconds: 15
 
 # ---------------------------------------------------------------------------
 # Warm worker slots: placeholder pods that run the worker image (so it is in
