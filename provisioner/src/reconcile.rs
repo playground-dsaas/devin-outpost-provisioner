@@ -27,8 +27,8 @@ use crate::metrics::Metrics;
 use crate::naming::{self, POOL_NAME};
 use crate::render::{
     self, ANNOTATION_DEFAULT_PLATFORM, ANNOTATION_ORPHANED_SINCE, ANNOTATION_OUTPOST_ID,
-    ANNOTATION_OUTPOST_RESTRICTED, ANNOTATION_WORKER_IMAGE, BoundOutpost, GoldenSnapshot,
-    RenderInput,
+    ANNOTATION_OUTPOST_RESTRICTED, ANNOTATION_WORKER_IMAGE, BoundOutpost, DEFAULT_PLATFORM_OTHER,
+    DEFAULT_PLATFORM_PENDING, DEFAULT_PLATFORM_SET, GoldenSnapshot, RenderInput,
 };
 use crate::snapshot::VolumeSnapshot;
 use crate::template::PoolTemplate;
@@ -316,9 +316,12 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
             return Ok(None);
         };
 
-        let default_platform = existing_pool
+        let recorded_default = existing_pool
             .and_then(|p| p.annotations().get(ANNOTATION_DEFAULT_PLATFORM))
             .map(String::as_str);
+        let default_platform = self
+            .ensure_default_platform(org, &outpost.outpost_id, recorded_default)
+            .await?;
         let bundle = render::render(&RenderInput {
             org,
             namespace: ns_name,
@@ -326,7 +329,7 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
             api_url: &self.settings.api_url,
             template: &self.template,
             image,
-            default_platform,
+            default_platform: Some(default_platform),
             golden: &golden,
         });
 
@@ -389,20 +392,64 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
             .await?;
         self.cluster.apply_pool(&bundle.pool).await?;
 
-        let pending = default_platform.is_none_or(|v| v == "pending");
         if existing_pool.is_none() {
-            tracing::warn!(
+            tracing::info!(
                 org_id = %org.org_id,
                 org = %org.name,
                 namespace = %ns_name,
                 outpost_id = %outpost.outpost_id,
-                "provisioned new organization; set its default platform to this Outpost in the Devin UI (no API yet)"
+                default_platform,
+                "provisioned new organization"
             );
         }
         Ok(Some(OrgOutcome {
             created_outpost: created,
-            default_platform_pending: pending,
+            default_platform_pending: default_platform == DEFAULT_PLATFORM_PENDING,
         }))
+    }
+
+    /// Point the org's default session placement at its Outpost when none is
+    /// set. A default that already points elsewhere (another cluster's
+    /// Outpost, a hosted platform) is a choice and is left alone. Returns the
+    /// [`ANNOTATION_DEFAULT_PLATFORM`] value to record.
+    async fn ensure_default_platform(
+        &self,
+        org: &Organization,
+        outpost_id: &str,
+        recorded: Option<&str>,
+    ) -> Result<&'static str> {
+        let current = match self.devin.get_default_platform(&org.org_id).await {
+            Ok(current) => current,
+            Err(Error::Api { status, body }) => {
+                tracing::warn!(org_id = %org.org_id, org = %org.name, status, body = %body, "cannot read the org default platform; set it to the Outpost in the Devin UI");
+                return Ok(DEFAULT_PLATFORM_PENDING);
+            }
+            Err(e) => return Err(e),
+        };
+        if current.outpost_pool_id.as_deref() == Some(outpost_id) {
+            return Ok(DEFAULT_PLATFORM_SET);
+        }
+        if !current.is_unset() {
+            if recorded != Some(DEFAULT_PLATFORM_OTHER) {
+                tracing::warn!(org_id = %org.org_id, org = %org.name, current = %current.describe(), "org default platform is not this Outpost; leaving it");
+            }
+            return Ok(DEFAULT_PLATFORM_OTHER);
+        }
+        match self
+            .devin
+            .set_default_platform(&org.org_id, outpost_id)
+            .await
+        {
+            Ok(()) => {
+                tracing::info!(org_id = %org.org_id, org = %org.name, outpost_id, "org default platform set to its Outpost");
+                Ok(DEFAULT_PLATFORM_SET)
+            }
+            Err(Error::Api { status, body }) => {
+                tracing::warn!(org_id = %org.org_id, org = %org.name, status, body = %body, "cannot set the org default platform (token lacks ManageOrgSettings?); set it in the Devin UI");
+                Ok(DEFAULT_PLATFORM_PENDING)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Find the Outpost bound to `org`, or create it. Resolution order:

@@ -23,9 +23,7 @@ use crate::error::{Error, Result};
 use crate::images::WorkerImages;
 use crate::naming::{self, POOL_NAME, TOKEN_SECRET_KEY, TOKEN_SECRET_NAME};
 use crate::reconcile::Settings;
-use crate::render::{
-    self, ANNOTATION_DEFAULT_PLATFORM, ANNOTATION_ORPHANED_SINCE, ANNOTATION_WORKER_IMAGE,
-};
+use crate::render::{self, ANNOTATION_ORPHANED_SINCE, ANNOTATION_WORKER_IMAGE};
 use crate::snapshot::VolumeSnapshot;
 use crate::template::PoolTemplate;
 
@@ -548,14 +546,19 @@ impl<D: DevinApi, C: Cluster> Verifier<D, C> {
         }
 
         let default_platform = format!("{ns_name}/default-platform");
-        match pool.annotations().get(ANNOTATION_DEFAULT_PLATFORM).map(String::as_str) {
-            Some(v) if v != "pending" => report.pass(default_platform, v.to_string()),
-            _ => report.warn(
+        match self.devin.get_default_platform(&org.org_id).await {
+            Ok(current) if current.outpost_pool_id.as_deref() == Some(pool.spec.pool_id.as_str()) => {
+                report.pass(default_platform, format!("org default platform is {}", current.describe()))
+            }
+            Ok(current) if current.is_unset() => report.warn(
                 default_platform,
-                format!(
-                    "set this org's default platform to its Outpost in the Devin UI (no API for it), then annotate the pool {ANNOTATION_DEFAULT_PLATFORM}=set"
-                ),
+                "org default platform is unset: the provisioner sets it on its next pass, unless its token lacks ManageOrgSettings (then set it in the Devin UI)".to_string(),
             ),
+            Ok(current) => report.warn(
+                default_platform,
+                format!("org default platform is {}, not this Outpost: its sessions run elsewhere unless changed in the Devin UI", current.describe()),
+            ),
+            Err(e) => report.warn(default_platform, format!("cannot read the org default platform: {e}")),
         }
         Ok(())
     }

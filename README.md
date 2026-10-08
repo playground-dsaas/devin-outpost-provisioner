@@ -89,9 +89,12 @@ helm install golden-home-a0f71d0e6a charts/devin-golden-home -n $NS \
 Order does not matter: until the snapshot is `readyToUse`, each provisioner
 pass logs that no golden volume is ready and retries on the next pass. Once it
 is, every org gets its namespace, Outpost and OutpostPool within one poll
-interval. Selecting that Outpost as the org's default platform is still done
-once in the org's Devin settings; the pool carries the annotation
-`devin.cognition.com/default-platform: pending` until then.
+interval, and its default platform (Settings > Devin in the Devin UI) is
+pointed at that Outpost if it was unset. A default that already points
+elsewhere (another cluster's Outpost, a hosted platform) is left alone; the
+pool's `devin.cognition.com/default-platform` annotation records `set`,
+`other`, or `pending` when the token lacks `ManageOrgSettings` and the UI is
+the only way.
 
 ## Changing the worker image
 
@@ -222,7 +225,7 @@ and then prints one line per check, failing the test if any `FAIL` remains:
 | `<ns>/token-secret` | `devin-pool-token` exists with its `token` key |
 | `<ns>/golden-binding` | the org's VolumeSnapshot binding is `readyToUse` and the pool clones session volumes from it |
 | `<ns>/rolebinding/<name>` | each `poolTemplate.namespace.roleBindings` entry binds its ClusterRole to `system:serviceaccounts:<ns>` (OpenShift: the SCC that admits uid 1000) |
-| `<ns>/default-platform` | `WARN` until the org's default platform has been pointed at its Outpost in the Devin UI (manual; no API) |
+| `<ns>/default-platform` | the org's default platform (Devin API) is this Outpost; `WARN` while unset (provisioner sets it, unless its token lacks `ManageOrgSettings`) or when it points elsewhere by choice |
 | `<ns>/orphaned` | `WARN` for a namespace whose org has left the enterprise and is inside the grace period |
 
 An org with no namespace fails `<ns>/namespace`: either the provisioner has not

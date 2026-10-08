@@ -111,10 +111,7 @@ async fn passes_once_operator_and_snapshot_controller_have_caught_up() {
     assert!(report.ok(), "{report}");
     assert!(passes(&report, &format!("{NS_A}/operator")));
     assert!(passes(&report, &format!("{NS_A}/golden-binding")));
-    assert!(matches!(
-        report.outcome(&format!("{NS_A}/default-platform")),
-        Some(Outcome::Warn(_))
-    ));
+    assert!(passes(&report, &format!("{NS_A}/default-platform")));
     assert!(report.to_string().ends_with("0 failed"));
 }
 

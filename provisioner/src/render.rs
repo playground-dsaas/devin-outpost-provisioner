@@ -41,6 +41,12 @@ pub const ANNOTATION_OUTPOST_RESTRICTED: &str = "devin.cognition.com/outpost-org
 /// `"pending"` until an API for it exists; flip manually after setting it in
 /// the Devin UI.
 pub const ANNOTATION_DEFAULT_PLATFORM: &str = "devin.cognition.com/default-platform";
+/// [`ANNOTATION_DEFAULT_PLATFORM`] values: the org's default platform is this
+/// Outpost; points elsewhere by choice and is left alone; the API refused to
+/// set it (token lacks `ManageOrgSettings`), so the Devin UI is the way.
+pub const DEFAULT_PLATFORM_SET: &str = "set";
+pub const DEFAULT_PLATFORM_OTHER: &str = "other";
+pub const DEFAULT_PLATFORM_PENDING: &str = "pending";
 /// RFC 3339 time the org first went missing from the enterprise list.
 pub const ANNOTATION_ORPHANED_SINCE: &str = "devin.cognition.com/orphaned-since";
 /// Annotation on a golden `VolumeSnapshot` naming the worker image whose
@@ -162,7 +168,7 @@ pub fn render(input: &RenderInput<'_>) -> Bundle {
             ANNOTATION_DEFAULT_PLATFORM.to_string(),
             default_platform
                 .filter(|v| !v.is_empty())
-                .unwrap_or("pending")
+                .unwrap_or(DEFAULT_PLATFORM_PENDING)
                 .to_string(),
         ),
     ]);

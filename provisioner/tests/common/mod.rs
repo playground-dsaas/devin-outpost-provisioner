@@ -1,7 +1,7 @@
 //! In-memory Devin account and fixtures shared by the integration tests.
 #![allow(dead_code)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use org_provisioner::cluster::MemCluster;
 use org_provisioner::devin::{
-    CreateOutpost, DevinApi, Organization, Outpost, OutpostMetadata, OutpostSpec,
+    CreateOutpost, DefaultPlatform, DevinApi, Organization, Outpost, OutpostMetadata, OutpostSpec,
 };
 use org_provisioner::reconcile::Settings;
 use org_provisioner::template::PoolTemplate;
@@ -32,6 +32,9 @@ pub struct MemDevin {
     pub created: Mutex<Vec<CreateOutpost>>,
     pub deleted: Mutex<Vec<String>>,
     pub counter: Mutex<u32>,
+    pub default_platforms: Mutex<BTreeMap<String, DefaultPlatform>>,
+    /// Make `set_default_platform` fail like a token without ManageOrgSettings.
+    pub forbid_default_platform: Mutex<bool>,
 }
 
 impl MemDevin {
@@ -54,6 +57,20 @@ impl MemDevin {
     }
     pub fn deleted(&self) -> Vec<String> {
         self.deleted.lock().unwrap().clone()
+    }
+    pub fn default_platform(&self, org_id: &str) -> DefaultPlatform {
+        self.default_platforms
+            .lock()
+            .unwrap()
+            .get(org_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+    pub fn set_default_platform_to(&self, org_id: &str, value: DefaultPlatform) {
+        self.default_platforms
+            .lock()
+            .unwrap()
+            .insert(org_id.to_string(), value);
     }
 }
 
@@ -106,6 +123,31 @@ impl DevinApi for MemDevin {
             .lock()
             .unwrap()
             .retain(|o| o.metadata.outpost_id != outpost_id);
+        Ok(())
+    }
+    async fn get_default_platform(&self, org_id: &str) -> Result<DefaultPlatform> {
+        Ok(self.default_platform(org_id))
+    }
+    async fn set_default_platform(&self, org_id: &str, outpost_id: &str) -> Result<()> {
+        if *self.forbid_default_platform.lock().unwrap() {
+            return Err(Error::Api {
+                status: 403,
+                body: "ManageOrgSettings required".into(),
+            });
+        }
+        let name = self
+            .outposts()
+            .into_iter()
+            .find(|o| o.metadata.outpost_id == outpost_id)
+            .map(|o| o.spec.name);
+        self.set_default_platform_to(
+            org_id,
+            DefaultPlatform {
+                platform: None,
+                outpost_pool_id: Some(outpost_id.to_string()),
+                outpost_pool_name: name,
+            },
+        );
         Ok(())
     }
 }

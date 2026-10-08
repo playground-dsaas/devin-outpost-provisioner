@@ -5,14 +5,15 @@ use std::time::Duration;
 use kube::ResourceExt;
 use org_provisioner::Error;
 use org_provisioner::cluster::{Cluster, MemCluster};
-use org_provisioner::devin::{CreateOutpost, DevinApi};
+use org_provisioner::devin::{CreateOutpost, DefaultPlatform, DevinApi};
 use org_provisioner::images::WorkerImages;
 use org_provisioner::metrics::Metrics;
 use org_provisioner::naming::{TOKEN_SECRET_KEY, TOKEN_SECRET_NAME};
 use org_provisioner::reconcile::{PassReport, Reconciler};
 use org_provisioner::render::{
     ANNOTATION_DEFAULT_PLATFORM, ANNOTATION_ORPHANED_SINCE, ANNOTATION_OUTPOST_ID,
-    ANNOTATION_OUTPOST_RESTRICTED, LABEL_ORG_SLUG,
+    ANNOTATION_OUTPOST_RESTRICTED, DEFAULT_PLATFORM_OTHER, DEFAULT_PLATFORM_PENDING,
+    DEFAULT_PLATFORM_SET, LABEL_ORG_SLUG,
 };
 mod common;
 use common::*;
@@ -45,7 +46,6 @@ async fn provisions_new_org_end_to_end() {
             organizations: 1,
             provisioned: 1,
             outposts_created: 1,
-            pending_default_platform: 1,
             ..Default::default()
         }
     );
@@ -80,7 +80,10 @@ async fn provisions_new_org_end_to_end() {
     let pool = c.pool(NS_A).expect("pool created");
     assert_eq!(pool.spec.pool_id, "outpost_1");
     assert_eq!(pool.spec.token_secret_ref.name, TOKEN_SECRET_NAME);
-    assert_eq!(pool.annotations()[ANNOTATION_DEFAULT_PLATFORM], "pending");
+    assert_eq!(
+        pool.annotations()[ANNOTATION_DEFAULT_PLATFORM],
+        DEFAULT_PLATFORM_SET
+    );
 }
 
 #[tokio::test]
@@ -218,7 +221,6 @@ async fn skips_org_devin_will_not_restrict_to() {
             provisioned: 1,
             skipped: 1,
             outposts_created: 1,
-            pending_default_platform: 1,
             ..Default::default()
         }
     );
@@ -412,25 +414,56 @@ async fn empty_org_list_never_deprovisions() {
 }
 
 #[tokio::test]
-async fn manual_default_platform_flag_survives_reconcile() {
+async fn default_platform_is_set_once_and_never_overrides_a_choice() {
     let devin = MemDevin::default();
     devin.add_org(ORG_A, "Alpha");
     let r = reconciler(devin);
-    r.run_pass(t0()).await.unwrap();
+    let report = r.run_pass(t0()).await.unwrap();
+    assert_eq!(report.pending_default_platform, 0);
+    let pool_id = r.cluster().pool(NS_A).unwrap().spec.pool_id.clone();
+    assert_eq!(
+        r.devin().default_platform(ORG_A).outpost_pool_id.as_deref(),
+        Some(pool_id.as_str())
+    );
+    assert_eq!(
+        r.cluster().pool(NS_A).unwrap().annotations()[ANNOTATION_DEFAULT_PLATFORM],
+        DEFAULT_PLATFORM_SET
+    );
 
-    let mut pool = r.cluster().pool(NS_A).unwrap();
-    pool.annotations_mut()
-        .insert(ANNOTATION_DEFAULT_PLATFORM.into(), "set".into());
-    org_provisioner::cluster::Cluster::apply_pool(r.cluster(), &pool)
-        .await
-        .unwrap();
-
+    // Someone points the org elsewhere: recorded, not fought.
+    r.devin().set_default_platform_to(
+        ORG_A,
+        DefaultPlatform {
+            platform: Some("linux".into()),
+            ..Default::default()
+        },
+    );
     let report = r.run_pass(t0()).await.unwrap();
     assert_eq!(report.pending_default_platform, 0);
     assert_eq!(
-        r.cluster().pool(NS_A).unwrap().annotations()[ANNOTATION_DEFAULT_PLATFORM],
-        "set"
+        r.devin().default_platform(ORG_A).platform.as_deref(),
+        Some("linux")
     );
+    assert_eq!(
+        r.cluster().pool(NS_A).unwrap().annotations()[ANNOTATION_DEFAULT_PLATFORM],
+        DEFAULT_PLATFORM_OTHER
+    );
+}
+
+#[tokio::test]
+async fn default_platform_pending_when_the_token_cannot_set_it() {
+    let devin = MemDevin::default();
+    devin.add_org(ORG_A, "Alpha");
+    *devin.forbid_default_platform.lock().unwrap() = true;
+    let r = reconciler(devin);
+    let report = r.run_pass(t0()).await.unwrap();
+    assert_eq!(report.provisioned, 1);
+    assert_eq!(report.pending_default_platform, 1);
+    assert_eq!(
+        r.cluster().pool(NS_A).unwrap().annotations()[ANNOTATION_DEFAULT_PLATFORM],
+        DEFAULT_PLATFORM_PENDING
+    );
+    assert!(r.devin().default_platform(ORG_A).is_unset());
 }
 
 #[tokio::test]
