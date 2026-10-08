@@ -184,8 +184,10 @@ The pool template is validated by the provisioner's tests
   its own `provisioner.outpostNamePrefix` (and `operator.operator.acceptorId`);
   two clusters on one Outpost would both claim its sessions.
 - The default NetworkPolicy's DNS rule targets `kube-system`/`kube-dns`;
-  OpenShift's resolver is in `openshift-dns`. `values-openshift.yaml` uses an
-  allow-all egress instead; tighten to taste.
+  OpenShift's resolver is in `openshift-dns`. `values-openshift.yaml` allows
+  DNS to `openshift-dns` and the public internet only (private ranges and
+  169.254/16 excluded); add `ipBlock` rules for internal git, package mirrors
+  or proxies.
 - Access to a pool is governed by Devin organization membership. Users never
   need an OpenShift account.
 
