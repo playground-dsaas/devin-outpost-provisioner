@@ -1,0 +1,56 @@
+{{- if and .Values.provisioner.enabled .Values.provisioner.admissionPolicy.enabled }}
+{{- $name := printf "%s-%s-scope" .Release.Namespace (include "platform.provisioner.name" .) }}
+{{- $prefix := required "provisioner.namespacePrefix is required" .Values.provisioner.namespacePrefix }}
+# RBAC cannot scope namespace or RoleBinding writes to a name prefix; this
+# policy does: the provisioner's ServiceAccount may only create, change or
+# delete namespaces named <namespacePrefix>*, RoleBindings inside them, and
+# VolumeSnapshotContents it labelled itself. Requires Kubernetes >= 1.30
+# (OpenShift >= 4.17).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "platform.provisioner.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["namespaces"]
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["rolebindings"]
+      - apiGroups: ["snapshot.storage.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["volumesnapshotcontents"]
+  matchConditions:
+    - name: org-provisioner
+      expression: request.userInfo.username == {{ printf "system:serviceaccount:%s:%s" .Release.Namespace (include "platform.provisioner.serviceAccountName" .) | squote }}
+  variables:
+    - name: subject
+      expression: "request.operation == 'DELETE' ? oldObject : object"
+  validations:
+    - expression: request.resource.resource != 'namespaces' || request.name.startsWith({{ $prefix | squote }})
+      message: {{ printf "org-provisioner may only manage namespaces named %s*" $prefix | quote }}
+    - expression: request.resource.resource != 'rolebindings' || request.namespace.startsWith({{ $prefix | squote }})
+      message: {{ printf "org-provisioner may only manage RoleBindings in namespaces named %s*" $prefix | quote }}
+    - expression: >-
+        request.resource.resource != 'volumesnapshotcontents' ||
+        variables.subject.metadata.?labels[?'app.kubernetes.io/managed-by'].orValue('') == 'org-provisioner'
+      message: org-provisioner may only manage VolumeSnapshotContents labelled app.kubernetes.io/managed-by=org-provisioner
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "platform.provisioner.labels" . | nindent 4 }}
+spec:
+  policyName: {{ $name }}
+  validationActions: [Deny]
+{{- end }}

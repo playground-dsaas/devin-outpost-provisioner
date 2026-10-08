@@ -516,17 +516,23 @@ impl<D: DevinApi, C: Cluster> Verifier<D, C> {
 
         if !self.template.namespace.role_bindings.is_empty() {
             let bindings = self.cluster.list_role_bindings(ns_name).await?;
-            let group = format!("system:serviceaccounts:{ns_name}");
             for expected in &self.template.namespace.role_bindings {
                 let name = format!("{ns_name}/rolebinding/{}", expected.name);
+                let subject = expected.subject(ns_name);
+                let group = match &subject.namespace {
+                    Some(sa_ns) => format!("ServiceAccount {sa_ns}/{}", subject.name),
+                    None => subject.name.clone(),
+                };
                 let found = bindings.iter().find(|b| {
                     b.name_any() == expected.name
                         && b.role_ref.kind == "ClusterRole"
                         && b.role_ref.name == expected.cluster_role
                         && b.subjects.as_ref().is_some_and(|subjects| {
-                            subjects
-                                .iter()
-                                .any(|s| s.kind == "Group" && s.name == group)
+                            subjects.iter().any(|s| {
+                                s.kind == subject.kind
+                                    && s.name == subject.name
+                                    && s.namespace == subject.namespace
+                            })
                         })
                 });
                 match found {
