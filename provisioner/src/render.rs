@@ -37,16 +37,6 @@ pub const ANNOTATION_OUTPOST_ID: &str = "devin.cognition.com/outpost-id";
 pub const ANNOTATION_OUTPOST_NAME: &str = "devin.cognition.com/outpost-name";
 /// `"true"` when the Outpost is restricted to this org via `allowed_org_ids`.
 pub const ANNOTATION_OUTPOST_RESTRICTED: &str = "devin.cognition.com/outpost-org-restricted";
-/// Whether the org's default platform points at this Outpost. Always
-/// `"pending"` until an API for it exists; flip manually after setting it in
-/// the Devin UI.
-pub const ANNOTATION_DEFAULT_PLATFORM: &str = "devin.cognition.com/default-platform";
-/// [`ANNOTATION_DEFAULT_PLATFORM`] values: the org's default platform is this
-/// Outpost; points elsewhere by choice and is left alone; the API refused to
-/// set it (token lacks `ManageOrgSettings`), so the Devin UI is the way.
-pub const DEFAULT_PLATFORM_SET: &str = "set";
-pub const DEFAULT_PLATFORM_OTHER: &str = "other";
-pub const DEFAULT_PLATFORM_PENDING: &str = "pending";
 /// RFC 3339 time the org first went missing from the enterprise list.
 pub const ANNOTATION_ORPHANED_SINCE: &str = "devin.cognition.com/orphaned-since";
 /// Annotation on a golden `VolumeSnapshot` naming the worker image whose
@@ -98,9 +88,6 @@ pub struct RenderInput<'a> {
     pub template: &'a PoolTemplate,
     /// Worker image for this org: the template's or a per-org profile's.
     pub image: &'a str,
-    /// Preserved from the existing pool when set to anything other than
-    /// `pending`, so a manual flip is not undone.
-    pub default_platform: Option<&'a str>,
     /// Bound into the namespace and set as the pool's `resume.volumeDataSource`.
     pub golden: &'a GoldenSnapshot,
 }
@@ -145,7 +132,6 @@ pub fn render(input: &RenderInput<'_>) -> Bundle {
         api_url,
         template,
         image,
-        default_platform,
         golden: g,
     } = input;
     let ns_policy = &template.namespace;
@@ -163,13 +149,6 @@ pub fn render(input: &RenderInput<'_>) -> Bundle {
         (
             ANNOTATION_OUTPOST_RESTRICTED.to_string(),
             outpost.org_restricted.to_string(),
-        ),
-        (
-            ANNOTATION_DEFAULT_PLATFORM.to_string(),
-            default_platform
-                .filter(|v| !v.is_empty())
-                .unwrap_or(DEFAULT_PLATFORM_PENDING)
-                .to_string(),
         ),
     ]);
 
@@ -364,7 +343,6 @@ mod tests {
             api_url: "https://api.devin.ai",
             template,
             image: template.pool.worker.overrides.image.as_deref().unwrap(),
-            default_platform: None,
             golden: &GOLDEN,
         }
     }
@@ -405,7 +383,6 @@ mod tests {
         let ann = b.pool.metadata.annotations.unwrap();
         assert_eq!(ann[ANNOTATION_OUTPOST_ID], "outpost_abc");
         assert_eq!(ann[ANNOTATION_OUTPOST_RESTRICTED], "true");
-        assert_eq!(ann[ANNOTATION_DEFAULT_PLATFORM], "pending");
     }
 
     #[test]
@@ -461,24 +438,6 @@ mod tests {
         assert_eq!(np.ingress.unwrap().len(), 0);
         assert_eq!(np.egress.unwrap().len(), 2);
         assert_eq!(np.policy_types.unwrap(), ["Ingress", "Egress"]);
-    }
-
-    #[test]
-    fn preserves_manual_default_platform_flag() {
-        let org = org();
-        let outpost = BoundOutpost {
-            outpost_id: "o".into(),
-            name: "n".into(),
-            org_restricted: false,
-        };
-        let t = template();
-        let mut i = input(&org, &outpost, &t);
-        i.default_platform = Some("set");
-        let b = render(&i);
-        assert_eq!(
-            b.pool.metadata.annotations.unwrap()[ANNOTATION_DEFAULT_PLATFORM],
-            "set"
-        );
     }
 
     #[test]

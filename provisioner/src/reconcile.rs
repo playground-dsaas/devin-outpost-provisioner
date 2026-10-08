@@ -26,9 +26,8 @@ use crate::images::WorkerImages;
 use crate::metrics::Metrics;
 use crate::naming::{self, POOL_NAME};
 use crate::render::{
-    self, ANNOTATION_DEFAULT_PLATFORM, ANNOTATION_ORPHANED_SINCE, ANNOTATION_OUTPOST_ID,
-    ANNOTATION_OUTPOST_RESTRICTED, ANNOTATION_WORKER_IMAGE, BoundOutpost, DEFAULT_PLATFORM_OTHER,
-    DEFAULT_PLATFORM_PENDING, DEFAULT_PLATFORM_SET, GoldenSnapshot, RenderInput,
+    self, ANNOTATION_ORPHANED_SINCE, ANNOTATION_OUTPOST_ID, ANNOTATION_OUTPOST_RESTRICTED,
+    ANNOTATION_WORKER_IMAGE, BoundOutpost, GoldenSnapshot, RenderInput,
 };
 use crate::snapshot::VolumeSnapshot;
 use crate::template::PoolTemplate;
@@ -65,8 +64,6 @@ pub struct PassReport {
     pub deleting: usize,
     /// Namespaces (and their Outposts) deleted this pass.
     pub deleted: usize,
-    /// Provisioned orgs still awaiting the manual default-platform step.
-    pub pending_default_platform: usize,
 }
 
 /// Reconciles organizations into namespaces, pools and Outposts.
@@ -188,8 +185,6 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
                 Ok(Some(outcome)) => {
                     report.provisioned += 1;
                     report.outposts_created += usize::from(outcome.created_outpost);
-                    report.pending_default_platform +=
-                        usize::from(outcome.default_platform_pending);
                 }
                 Ok(None) => report.skipped += 1,
                 Err(err) => {
@@ -316,12 +311,6 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
             return Ok(None);
         };
 
-        let recorded_default = existing_pool
-            .and_then(|p| p.annotations().get(ANNOTATION_DEFAULT_PLATFORM))
-            .map(String::as_str);
-        let default_platform = self
-            .ensure_default_platform(org, &outpost.outpost_id, recorded_default)
-            .await?;
         let bundle = render::render(&RenderInput {
             org,
             namespace: ns_name,
@@ -329,7 +318,6 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
             api_url: &self.settings.api_url,
             template: &self.template,
             image,
-            default_platform: Some(default_platform),
             golden: &golden,
         });
 
@@ -398,58 +386,43 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
                 org = %org.name,
                 namespace = %ns_name,
                 outpost_id = %outpost.outpost_id,
-                default_platform,
                 "provisioned new organization"
             );
         }
+        self.ensure_default_platform(org, &outpost.outpost_id)
+            .await?;
         Ok(Some(OrgOutcome {
             created_outpost: created,
-            default_platform_pending: default_platform == DEFAULT_PLATFORM_PENDING,
         }))
     }
 
     /// Point the org's default session placement at its Outpost when none is
-    /// set. A default that already points elsewhere (another cluster's
-    /// Outpost, a hosted platform) is a choice and is left alone. Returns the
-    /// [`ANNOTATION_DEFAULT_PLATFORM`] value to record.
-    async fn ensure_default_platform(
-        &self,
-        org: &Organization,
-        outpost_id: &str,
-        recorded: Option<&str>,
-    ) -> Result<&'static str> {
-        let current = match self.devin.get_default_platform(&org.org_id).await {
-            Ok(current) => current,
-            Err(Error::Api { status, body }) => {
-                tracing::warn!(org_id = %org.org_id, org = %org.name, status, body = %body, "cannot read the org default platform; set it to the Outpost in the Devin UI");
-                return Ok(DEFAULT_PLATFORM_PENDING);
-            }
-            Err(e) => return Err(e),
-        };
+    /// set, so its sessions land here without a UI step. A default that already
+    /// points elsewhere (another cluster's Outpost, a hosted platform) is a
+    /// choice and is left alone. Runs after the pool is applied: an API refusal
+    /// (the token needs `ManageOrgSettings`) is this org's reconcile error for
+    /// the pass, not a reason to leave it without a pool.
+    async fn ensure_default_platform(&self, org: &Organization, outpost_id: &str) -> Result<()> {
+        let current = self.devin.get_default_platform(&org.org_id).await?;
         if current.outpost_pool_id.as_deref() == Some(outpost_id) {
-            return Ok(DEFAULT_PLATFORM_SET);
+            return Ok(());
         }
         if !current.is_unset() {
-            if recorded != Some(DEFAULT_PLATFORM_OTHER) {
-                tracing::warn!(org_id = %org.org_id, org = %org.name, current = %current.describe(), "org default platform is not this Outpost; leaving it");
-            }
-            return Ok(DEFAULT_PLATFORM_OTHER);
+            tracing::debug!(org_id = %org.org_id, org = %org.name, current = %current.describe(), "org default platform is not this Outpost; leaving it");
+            return Ok(());
         }
-        match self
-            .devin
+        self.devin
             .set_default_platform(&org.org_id, outpost_id)
             .await
-        {
-            Ok(()) => {
-                tracing::info!(org_id = %org.org_id, org = %org.name, outpost_id, "org default platform set to its Outpost");
-                Ok(DEFAULT_PLATFORM_SET)
-            }
-            Err(Error::Api { status, body }) => {
-                tracing::warn!(org_id = %org.org_id, org = %org.name, status, body = %body, "cannot set the org default platform (token lacks ManageOrgSettings?); set it in the Devin UI");
-                Ok(DEFAULT_PLATFORM_PENDING)
-            }
-            Err(e) => Err(e),
-        }
+            .map_err(|e| match e {
+                Error::Api { status, body } => Error::Api {
+                    status,
+                    body: format!("setting the org default platform (the token needs ManageOrgSettings): {body}"),
+                },
+                e => e,
+            })?;
+        tracing::info!(org_id = %org.org_id, org = %org.name, outpost_id, "org default platform set to its Outpost");
+        Ok(())
     }
 
     /// Find the Outpost bound to `org`, or create it. Resolution order:
@@ -600,7 +573,6 @@ fn bind(o: &Outpost, org: &Organization) -> BoundOutpost {
 
 struct OrgOutcome {
     created_outpost: bool,
-    default_platform_pending: bool,
 }
 
 enum Deprovision {

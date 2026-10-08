@@ -40,7 +40,6 @@ pub struct Metrics {
     pub provisioned_pools: Gauge,
     pub skipped_organizations: Gauge,
     pub orphaned_namespaces: Gauge,
-    pub pending_default_platform: Gauge,
     pub passes: Counter,
     pub pass_failures: Counter,
     pub reconcile_errors: Counter,
@@ -62,7 +61,6 @@ impl Metrics {
         let provisioned_pools = Gauge::default();
         let skipped_organizations = Gauge::default();
         let orphaned_namespaces = Gauge::default();
-        let pending_default_platform = Gauge::default();
         let passes = Counter::default();
         let pass_failures = Counter::default();
         let reconcile_errors = Counter::default();
@@ -89,7 +87,6 @@ impl Metrics {
             "Managed namespaces whose organization is gone, awaiting deletion",
             orphaned_namespaces.clone(),
         );
-        registry.register("pending_default_platform", "Provisioned organizations whose default platform has not been pointed at their Outpost", pending_default_platform.clone());
         registry.register("passes", "Completed reconcile passes", passes.clone());
         registry.register(
             "pass_failures",
@@ -122,7 +119,6 @@ impl Metrics {
             provisioned_pools,
             skipped_organizations,
             orphaned_namespaces,
-            pending_default_platform,
             passes,
             pass_failures,
             reconcile_errors,
@@ -139,8 +135,6 @@ impl Metrics {
         self.skipped_organizations.set(report.skipped as i64);
         self.orphaned_namespaces
             .set((report.orphaned + report.deleting) as i64);
-        self.pending_default_platform
-            .set(report.pending_default_platform as i64);
         self.passes.inc();
         self.last_pass_unix.set(chrono::Utc::now().timestamp());
     }

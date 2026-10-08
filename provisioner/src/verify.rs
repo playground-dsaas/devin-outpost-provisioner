@@ -550,15 +550,15 @@ impl<D: DevinApi, C: Cluster> Verifier<D, C> {
             Ok(current) if current.outpost_pool_id.as_deref() == Some(pool.spec.pool_id.as_str()) => {
                 report.pass(default_platform, format!("org default platform is {}", current.describe()))
             }
-            Ok(current) if current.is_unset() => report.warn(
+            Ok(current) if current.is_unset() => report.fail(
                 default_platform,
-                "org default platform is unset: the provisioner sets it on its next pass, unless its token lacks ManageOrgSettings (then set it in the Devin UI)".to_string(),
+                "org default platform is unset: the provisioner sets it after the pool exists; if this persists its token lacks ManageOrgSettings (see its logs)".to_string(),
             ),
             Ok(current) => report.warn(
                 default_platform,
-                format!("org default platform is {}, not this Outpost: its sessions run elsewhere unless changed in the Devin UI", current.describe()),
+                format!("org default platform is {}, not this Outpost: its sessions run elsewhere unless changed via the API or Devin UI", current.describe()),
             ),
-            Err(e) => report.warn(default_platform, format!("cannot read the org default platform: {e}")),
+            Err(e) => report.fail(default_platform, format!("cannot read the org default platform: {e}")),
         }
         Ok(())
     }

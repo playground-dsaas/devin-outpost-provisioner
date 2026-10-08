@@ -11,9 +11,7 @@ use org_provisioner::metrics::Metrics;
 use org_provisioner::naming::{TOKEN_SECRET_KEY, TOKEN_SECRET_NAME};
 use org_provisioner::reconcile::{PassReport, Reconciler};
 use org_provisioner::render::{
-    ANNOTATION_DEFAULT_PLATFORM, ANNOTATION_ORPHANED_SINCE, ANNOTATION_OUTPOST_ID,
-    ANNOTATION_OUTPOST_RESTRICTED, DEFAULT_PLATFORM_OTHER, DEFAULT_PLATFORM_PENDING,
-    DEFAULT_PLATFORM_SET, LABEL_ORG_SLUG,
+    ANNOTATION_ORPHANED_SINCE, ANNOTATION_OUTPOST_ID, ANNOTATION_OUTPOST_RESTRICTED, LABEL_ORG_SLUG,
 };
 mod common;
 use common::*;
@@ -81,8 +79,8 @@ async fn provisions_new_org_end_to_end() {
     assert_eq!(pool.spec.pool_id, "outpost_1");
     assert_eq!(pool.spec.token_secret_ref.name, TOKEN_SECRET_NAME);
     assert_eq!(
-        pool.annotations()[ANNOTATION_DEFAULT_PLATFORM],
-        DEFAULT_PLATFORM_SET
+        r.devin().default_platform(ORG_A).outpost_pool_id.as_deref(),
+        Some("outpost_1")
     );
 }
 
@@ -419,18 +417,14 @@ async fn default_platform_is_set_once_and_never_overrides_a_choice() {
     devin.add_org(ORG_A, "Alpha");
     let r = reconciler(devin);
     let report = r.run_pass(t0()).await.unwrap();
-    assert_eq!(report.pending_default_platform, 0);
+    assert_eq!(report.errors, 0);
     let pool_id = r.cluster().pool(NS_A).unwrap().spec.pool_id.clone();
     assert_eq!(
         r.devin().default_platform(ORG_A).outpost_pool_id.as_deref(),
         Some(pool_id.as_str())
     );
-    assert_eq!(
-        r.cluster().pool(NS_A).unwrap().annotations()[ANNOTATION_DEFAULT_PLATFORM],
-        DEFAULT_PLATFORM_SET
-    );
 
-    // Someone points the org elsewhere: recorded, not fought.
+    // Someone points the org elsewhere: left alone.
     r.devin().set_default_platform_to(
         ORG_A,
         DefaultPlatform {
@@ -439,31 +433,31 @@ async fn default_platform_is_set_once_and_never_overrides_a_choice() {
         },
     );
     let report = r.run_pass(t0()).await.unwrap();
-    assert_eq!(report.pending_default_platform, 0);
+    assert_eq!(report.errors, 0);
     assert_eq!(
         r.devin().default_platform(ORG_A).platform.as_deref(),
         Some("linux")
     );
-    assert_eq!(
-        r.cluster().pool(NS_A).unwrap().annotations()[ANNOTATION_DEFAULT_PLATFORM],
-        DEFAULT_PLATFORM_OTHER
-    );
 }
 
 #[tokio::test]
-async fn default_platform_pending_when_the_token_cannot_set_it() {
+async fn default_platform_refusal_is_a_reconcile_error_but_the_pool_still_exists() {
     let devin = MemDevin::default();
     devin.add_org(ORG_A, "Alpha");
     *devin.forbid_default_platform.lock().unwrap() = true;
     let r = reconciler(devin);
     let report = r.run_pass(t0()).await.unwrap();
-    assert_eq!(report.provisioned, 1);
-    assert_eq!(report.pending_default_platform, 1);
-    assert_eq!(
-        r.cluster().pool(NS_A).unwrap().annotations()[ANNOTATION_DEFAULT_PLATFORM],
-        DEFAULT_PLATFORM_PENDING
-    );
+    assert_eq!(report.provisioned, 0);
+    assert_eq!(report.errors, 1);
+    assert!(r.cluster().pool(NS_A).is_some());
     assert!(r.devin().default_platform(ORG_A).is_unset());
+
+    // Once the token can set it, the next pass does.
+    *r.devin().forbid_default_platform.lock().unwrap() = false;
+    let report = r.run_pass(t0()).await.unwrap();
+    assert_eq!(report.errors, 0);
+    assert_eq!(report.provisioned, 1);
+    assert!(!r.devin().default_platform(ORG_A).is_unset());
 }
 
 #[tokio::test]
