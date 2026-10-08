@@ -38,4 +38,22 @@ poolTemplate:
     networkPolicy:
       ingress: []
       egress:
-        - {}
+        # Cluster DNS. The dns-default Service forwards 53 to 5353 on the
+        # pods, and NetworkPolicy matches the pod port.
+        - to:
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: openshift-dns
+              podSelector:
+                matchLabels:
+                  dns.operator.openshift.io/daemonset-dns: default
+          ports:
+            - { protocol: UDP, port: 5353 }
+            - { protocol: TCP, port: 5353 }
+        # Internet (Devin API, SCM, package mirrors); never private ranges,
+        # the node network or the cloud metadata service. Add internal hosts
+        # (git, artifact mirrors, proxy) as further ipBlock rules.
+        - to:
+            - ipBlock:
+                cidr: 0.0.0.0/0
+                except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]

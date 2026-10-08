@@ -1,0 +1,90 @@
+{{- if .Values.operator.enabled }}
+{{- if .Values.operator.rbac.create }}
+{{- fail "operator.rbac.create must stay false: the operator's RBAC is templates/operator-rbac.yaml" }}
+{{- end }}
+{{- $sa := include "platform.operator.serviceAccountName" . }}
+{{- $name := printf "%s-%s" .Release.Namespace $sa }}
+# Replaces the operator subchart's ClusterRole (operator.rbac.create: false).
+# Cluster-wide the operator only watches pools and its worker pods; it writes
+# pods, Secrets and PVCs only in org namespaces, through the org role the
+# provisioner binds there.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "platform.provisioner.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["outposts.cognition.com"]
+    resources: ["outpostpools"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "platform.provisioner.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+---
+# Never bound cluster-wide: only by RoleBindings in org namespaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "platform.operator.orgRole" . }}
+  labels:
+    {{- include "platform.provisioner.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["outposts.cognition.com"]
+    resources: ["outpostpools", "outpostpools/status", "outpostpools/finalizers"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["pods", "secrets", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch"]
+  # GkeSnapshot resume policy only; inert where the API group is absent.
+  - apiGroups: ["podsnapshot.gke.io"]
+    resources: ["podsnapshotpolicies", "podsnapshotmanualtriggers", "podsnapshots"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch"]
+---
+# Leader election and the generated acceptor id.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $sa }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform.provisioner.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $sa }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform.provisioner.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $sa }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

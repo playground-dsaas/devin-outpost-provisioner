@@ -184,10 +184,33 @@ The pool template is validated by the provisioner's tests
   its own `provisioner.outpostNamePrefix` (and `operator.operator.acceptorId`);
   two clusters on one Outpost would both claim its sessions.
 - The default NetworkPolicy's DNS rule targets `kube-system`/`kube-dns`;
-  OpenShift's resolver is in `openshift-dns`. `values-openshift.yaml` uses an
-  allow-all egress instead; tighten to taste.
+  OpenShift's resolver is in `openshift-dns`. `values-openshift.yaml` allows
+  DNS to `openshift-dns` and the public internet only (private ranges and
+  169.254/16 excluded); add `ipBlock` rules for internal git, package mirrors
+  or proxies.
 - Access to a pool is governed by Devin organization membership. Users never
   need an OpenShift account.
+
+## Permissions
+
+What the chart grants (`templates/provisioner-rbac.yaml`, `templates/operator-rbac.yaml`).
+Nothing outside the system namespace and the `<namespacePrefix>*` namespaces
+is writable by either component.
+
+| who | cluster-wide | per org namespace (RoleBinding the provisioner writes there) | system namespace |
+|---|---|---|---|
+| provisioner | namespaces: create/patch/delete; RoleBindings: create/patch; `bind` on the named ClusterRoles only; VolumeSnapshotContents; read OutpostPools | quotas, LimitRanges, NetworkPolicies, the pool token Secret, VolumeSnapshots, OutpostPools | read golden VolumeSnapshots |
+| operator | read OutpostPools and Pods | worker Pods, Secrets, PVCs, OutpostPool status | leader-election Lease, acceptor-id ConfigMap |
+
+- No cluster-wide Secret access for either component. The operator subchart's
+  own ClusterRole is disabled (`operator.rbac.create: false`).
+- RBAC cannot restrict namespace or RoleBinding writes by name, so a
+  ValidatingAdmissionPolicy (`provisioner.admissionPolicy.enabled`, Kubernetes
+  >= 1.30 / OpenShift >= 4.17) rejects any provisioner request that creates,
+  changes or deletes a namespace not named `<namespacePrefix>*`, a RoleBinding
+  outside those namespaces, or a VolumeSnapshotContent it did not label.
+- Worker pods mount no ServiceAccount token, so a session has no Kubernetes
+  API access at all.
 
 ## Validation
 

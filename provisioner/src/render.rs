@@ -8,7 +8,7 @@ use k8s_openapi::api::core::v1::{
     ResourceQuotaSpec, Secret, TypedLocalObjectReference,
 };
 use k8s_openapi::api::networking::v1::{NetworkPolicy, NetworkPolicySpec};
-use k8s_openapi::api::rbac::v1::{RoleBinding, RoleRef, Subject};
+use k8s_openapi::api::rbac::v1::{RoleBinding, RoleRef};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use kube::ResourceExt;
 
@@ -205,12 +205,7 @@ pub fn render(input: &RenderInput<'_>) -> Bundle {
                 kind: "ClusterRole".to_string(),
                 name: b.cluster_role.clone(),
             },
-            subjects: Some(vec![Subject {
-                api_group: Some("rbac.authorization.k8s.io".to_string()),
-                kind: "Group".to_string(),
-                name: format!("system:serviceaccounts:{namespace}"),
-                namespace: None,
-            }]),
+            subjects: Some(vec![b.subject(namespace)]),
         })
         .collect();
 
@@ -314,6 +309,7 @@ mod tests {
     use std::sync::LazyLock;
 
     use super::*;
+    use crate::template::{NamespaceRoleBinding, ServiceAccountRef};
 
     fn org() -> Organization {
         Organization {
@@ -438,6 +434,53 @@ mod tests {
         assert_eq!(np.ingress.unwrap().len(), 0);
         assert_eq!(np.egress.unwrap().len(), 2);
         assert_eq!(np.policy_types.unwrap(), ["Ingress", "Egress"]);
+    }
+
+    #[test]
+    fn role_binding_targets_one_service_account_or_the_whole_namespace() {
+        let org = org();
+        let outpost = BoundOutpost {
+            outpost_id: "o".into(),
+            name: "n".into(),
+            org_restricted: false,
+        };
+        let mut t = template();
+        t.namespace.role_bindings = vec![
+            NamespaceRoleBinding {
+                name: "scc".into(),
+                cluster_role: "system:openshift:scc:nonroot-v2".into(),
+                service_account: None,
+            },
+            NamespaceRoleBinding {
+                name: "org-provisioner".into(),
+                cluster_role: "sys-org-provisioner-org".into(),
+                service_account: Some(ServiceAccountRef {
+                    name: "org-provisioner".into(),
+                    namespace: "sys".into(),
+                }),
+            },
+        ];
+        let b = render(&input(&org, &outpost, &t));
+        let ns = b.namespace.metadata.name.clone().unwrap();
+        let subjects: Vec<_> = b
+            .role_bindings
+            .iter()
+            .map(|rb| {
+                let s = &rb.subjects.as_ref().unwrap()[0];
+                (s.kind.as_str(), s.name.clone(), s.namespace.clone())
+            })
+            .collect();
+        assert_eq!(
+            subjects,
+            [
+                ("Group", format!("system:serviceaccounts:{ns}"), None),
+                (
+                    "ServiceAccount",
+                    "org-provisioner".into(),
+                    Some("sys".into())
+                ),
+            ]
+        );
     }
 
     #[test]

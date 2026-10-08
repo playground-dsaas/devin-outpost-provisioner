@@ -44,6 +44,12 @@ operator:
   # Never enable: pools are created per org by the provisioner.
   defaultPool:
     enabled: false
+  # The operator's RBAC is templates/operator-rbac.yaml (cluster-wide read of
+  # pools and pods; writes only in org namespaces). Keep false.
+  rbac:
+    create: false
+  serviceAccount:
+    name: outposts-operator
   metrics:
     service:
       enabled: true
@@ -95,6 +101,11 @@ provisioner:
   outpostNamePrefix: outpost-
   # Org IDs never provisioned (e.g. the enterprise-level org).
   excludeOrgIds: []
+  # ValidatingAdmissionPolicy confining the provisioner's namespace,
+  # RoleBinding and VolumeSnapshotContent writes to its own objects
+  # (Kubernetes >= 1.30). See templates/provisioner-admission-policy.yaml.
+  admissionPolicy:
+    enabled: true
   logLevel: info
   extraEnv: []
 

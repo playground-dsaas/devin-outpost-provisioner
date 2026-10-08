@@ -105,3 +105,17 @@ images the running provisioner does.
         path: {{ $p.token.secretKey }}
 {{- end }}
 {{- end -}}
+
+{{/* ClusterRole the provisioner binds to itself in each org namespace it creates. */}}
+{{- define "platform.provisioner.orgRole" -}}
+{{- printf "%s-%s-org" .Release.Namespace (include "platform.provisioner.name" .) -}}
+{{- end -}}
+
+{{- define "platform.operator.serviceAccountName" -}}
+{{- required "operator.serviceAccount.name is required (the provisioner binds it in each org namespace)" .Values.operator.serviceAccount.name -}}
+{{- end -}}
+
+{{/* ClusterRole the provisioner binds to the operator in each org namespace. */}}
+{{- define "platform.operator.orgRole" -}}
+{{- printf "%s-%s-org" .Release.Namespace (include "platform.operator.serviceAccountName" .) -}}
+{{- end -}}
