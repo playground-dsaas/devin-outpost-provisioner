@@ -8,7 +8,13 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "platform.provisioner.labels" . | nindent 4 }}
+{{- $pt := deepCopy .Values.poolTemplate }}
+{{- $bindings := list (dict "name" (include "platform.provisioner.name" .) "clusterRole" (include "platform.provisioner.orgRole" .) "serviceAccount" (dict "name" (include "platform.provisioner.serviceAccountName" .) "namespace" .Release.Namespace)) }}
+{{- if .Values.operator.enabled }}
+{{- $bindings = append $bindings (dict "name" (include "platform.operator.serviceAccountName" .) "clusterRole" (include "platform.operator.orgRole" .) "serviceAccount" (dict "name" (include "platform.operator.serviceAccountName" .) "namespace" .Release.Namespace)) }}
+{{- end }}
+{{- $_ := set $pt.namespace "roleBindings" (concat (default list $pt.namespace.roleBindings) $bindings) }}
 data:
   pool-template.yaml: |
-    {{- toYaml .Values.poolTemplate | nindent 4 }}
+    {{- toYaml $pt | nindent 4 }}
 {{- end }}

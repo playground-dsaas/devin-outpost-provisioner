@@ -334,6 +334,11 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
         });
 
         self.cluster.apply_namespace(&bundle.namespace).await?;
+        // First: they grant the provisioner (and the operator) its write
+        // access to everything else in the namespace.
+        for b in &bundle.role_bindings {
+            self.cluster.apply_role_binding(b).await?;
+        }
         if existing_ns.is_some_and(|ns| ns.annotations().contains_key(ANNOTATION_ORPHANED_SINCE)) {
             tracing::info!(org_id = %org.org_id, namespace = %ns_name, "organization is back; clearing orphan marker");
             self.cluster
@@ -348,9 +353,6 @@ impl<D: DevinApi, C: Cluster> Reconciler<D, C> {
         }
         if let Some(n) = &bundle.network_policy {
             self.cluster.apply_network_policy(n).await?;
-        }
-        for b in &bundle.role_bindings {
-            self.cluster.apply_role_binding(b).await?;
         }
         self.cluster
             .apply_secret(&render::render_token_secret(org, ns_name, &self.token))

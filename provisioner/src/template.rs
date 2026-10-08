@@ -11,6 +11,7 @@ use std::path::Path;
 
 use devin_outposts_k8s::crd::{ResumeConfig, WorkerTemplate};
 use k8s_openapi::api::networking::v1::{NetworkPolicyEgressRule, NetworkPolicyIngressRule};
+use k8s_openapi::api::rbac::v1::Subject;
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use serde::{Deserialize, Serialize};
 use serde_yaml_ng::Value;
@@ -76,6 +77,39 @@ pub struct NamespaceRoleBinding {
     /// The ClusterRole bound; the provisioner's own ClusterRole must be allowed
     /// to `bind` it.
     pub cluster_role: String,
+    /// Bind to this one ServiceAccount instead of every ServiceAccount of the
+    /// org namespace (the chart grants the provisioner and operator their
+    /// per-namespace permissions this way).
+    #[serde(default)]
+    pub service_account: Option<ServiceAccountRef>,
+}
+
+/// A ServiceAccount in another namespace.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceAccountRef {
+    pub name: String,
+    pub namespace: String,
+}
+
+impl NamespaceRoleBinding {
+    /// The single subject of this binding in org namespace `namespace`.
+    pub fn subject(&self, namespace: &str) -> Subject {
+        match &self.service_account {
+            Some(sa) => Subject {
+                api_group: None,
+                kind: "ServiceAccount".to_string(),
+                name: sa.name.clone(),
+                namespace: Some(sa.namespace.clone()),
+            },
+            None => Subject {
+                api_group: Some("rbac.authorization.k8s.io".to_string()),
+                kind: "Group".to_string(),
+                name: format!("system:serviceaccounts:{namespace}"),
+                namespace: None,
+            },
+        }
+    }
 }
 
 /// One container-type `LimitRangeItem`.

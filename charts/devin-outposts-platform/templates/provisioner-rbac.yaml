@@ -1,23 +1,22 @@
 {{- if .Values.provisioner.enabled }}
-# Cluster-scoped because the provisioner creates one namespace per org and
-# writes the policy objects, token Secret, snapshot binding and OutpostPool in it.
+{{- $name := printf "%s-%s" .Release.Namespace (include "platform.provisioner.name" .) }}
+# Cluster scope holds only what cannot be namespaced: creating the org
+# namespaces, the RoleBindings that hand out the org-namespace roles below, the
+# cluster-scoped snapshot bindings and reading pools. Every other write (Secrets,
+# quotas, policies, pools) comes from the org role, bound by the provisioner into
+# each namespace it creates. provisioner-admission-policy.yaml confines the
+# cluster-scope writes to <namespacePrefix>* namespaces and managed snapshot
+# contents.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ .Release.Namespace }}-{{ include "platform.provisioner.name" . }}
+  name: {{ $name }}
   labels:
     {{- include "platform.provisioner.labels" . | nindent 4 }}
 rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch", "create", "patch", "delete"]
-  - apiGroups: [""]
-    resources: ["resourcequotas", "limitranges", "secrets"]
-    verbs: ["get", "list", "create", "patch"]
-  - apiGroups: ["networking.k8s.io"]
-    resources: ["networkpolicies"]
-    verbs: ["get", "list", "create", "patch"]
-{{- with .Values.poolTemplate.namespace.roleBindings }}
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["rolebindings"]
     verbs: ["get", "list", "create", "patch"]
@@ -26,27 +25,83 @@ rules:
     resources: ["clusterroles"]
     verbs: ["bind"]
     resourceNames:
-      {{- range . }}
+      - {{ include "platform.provisioner.orgRole" . | quote }}
+      {{- if .Values.operator.enabled }}
+      - {{ include "platform.operator.orgRole" . | quote }}
+      {{- end }}
+      {{- range .Values.poolTemplate.namespace.roleBindings }}
       - {{ .clusterRole | quote }}
       {{- end }}
-{{- end }}
   - apiGroups: ["snapshot.storage.k8s.io"]
-    resources: ["volumesnapshots", "volumesnapshotcontents"]
-    verbs: ["get", "list", "create", "patch"]
+    resources: ["volumesnapshotcontents"]
+    verbs: ["get", "list", "create", "patch", "delete", "deletecollection"]
   - apiGroups: ["outposts.cognition.com"]
     resources: ["outpostpools"]
-    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ .Release.Namespace }}-{{ include "platform.provisioner.name" . }}
+  name: {{ $name }}
   labels:
     {{- include "platform.provisioner.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ .Release.Namespace }}-{{ include "platform.provisioner.name" . }}
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "platform.provisioner.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# Never bound cluster-wide: only by RoleBindings in org namespaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "platform.provisioner.orgRole" . }}
+  labels:
+    {{- include "platform.provisioner.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["resourcequotas", "limitranges"]
+    verbs: ["get", "list", "create", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "create", "patch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["get", "list", "create", "patch"]
+  - apiGroups: ["outposts.cognition.com"]
+    resources: ["outpostpools"]
+    verbs: ["get", "list", "create", "patch", "delete"]
+---
+# The golden home snapshots live in the release namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "platform.provisioner.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform.provisioner.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "platform.provisioner.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform.provisioner.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "platform.provisioner.name" . }}
 subjects:
   - kind: ServiceAccount
     name: {{ include "platform.provisioner.serviceAccountName" . }}
