@@ -3,14 +3,11 @@
 # Installs into the release namespace:
 #   - the Outposts operator (subchart devin-outposts-k8s, alias `operator`),
 #     watching every namespace;
-#   - the org provisioner, which for every Devin organization creates
-#       <namespacePrefix><org-id>: Namespace + ResourceQuota/LimitRange/NetworkPolicy
-#       + token Secret + golden snapshot binding + OutpostPool
-#     from `poolTemplate` below;
-#   - optionally warm worker slots (image pre-pulled standby capacity).
+#   - the org provisioner, which gives every Devin organization an Outpost, a
+#     namespace (<namespacePrefix><org-id>) holding the token Secret, and the
+#     objects listed under `manifests` (by default an OutpostPool plus quota,
+#     limits and network policy).
 # Worker pods are created in the org namespaces by the operator.
-# The golden home snapshot the pools clone from is a separate chart,
-# devin-golden-home, installed once per worker image tag.
 
 systemNamespace:
   # Let Helm create and label the release namespace. Usually false: create it
@@ -78,34 +75,43 @@ provisioner:
     pullPolicy: IfNotPresent
   imagePullSecrets: []
 
-  # Base URL of the Devin API the service user belongs to. Also written into
-  # every OutpostPool.spec.apiUrl. Enterprise deployments use their own host.
+  # Base URL of the Devin API the service user belongs to (enterprise hosts:
+  # https://<host>/api). The pool manifest below passes it to the operator.
   devinApiUrl: https://api.devin.ai
 
-  # Devin service-user token (list orgs, manage Outposts). Exactly one source:
+  # Devin service-user token (list orgs, manage Outposts), a Secret in the
+  # release namespace:
+  #   kubectl -n <ns> create secret generic devin-outposts-token --from-literal=token=...
+  # The same token is copied into each org namespace as Secret
+  # devin-pool-token (key `token`) for the operator.
   token:
-    # Kubernetes Secret in the release namespace, mounted as a file.
-    #   kubectl -n <ns> create secret generic devin-outposts-token --from-literal=token=...
     existingSecret: ""
     secretKey: token
-    # Or an AWS Secrets Manager secret id/ARN read via Pod Identity / IRSA
-    # (set serviceAccount.annotations as the role requires).
-    awsSecretId: ""
-    awsRegion: ""
 
   pollIntervalSeconds: 60
-  # How long an org must be gone from the org list before its namespace and
-  # Outpost are deleted.
-  deprovisionGraceSeconds: 3600
-  namespacePrefix: outpost-namespace-
+  namespacePrefix: devin-org-
   outpostNamePrefix: outpost-
   # Org IDs never provisioned (e.g. the enterprise-level org).
   excludeOrgIds: []
-  # ValidatingAdmissionPolicy confining the provisioner's namespace,
-  # RoleBinding and VolumeSnapshotContent writes to its own objects
-  # (Kubernetes >= 1.30). See templates/provisioner-admission-policy.yaml.
+  # ValidatingAdmissionPolicy confining every write by the provisioner to
+  # <namespacePrefix>* namespaces (Kubernetes >= 1.30 / OpenShift >= 4.17).
   admissionPolicy:
     enabled: true
+  # Permissions for `manifests`. Namespaces, Secrets and the operator's
+  # RoleBinding are always granted; add a rule for every other kind you list.
+  rbac:
+    rules:
+      - apiGroups: [""]
+        resources: [resourcequotas, limitranges]
+        verbs: [get, create, patch]
+      - apiGroups: [networking.k8s.io]
+        resources: [networkpolicies]
+        verbs: [get, create, patch]
+      - apiGroups: [outposts.cognition.com]
+        resources: [outpostpools]
+        verbs: [get, create, patch]
+    # ClusterRoles that RoleBindings in `manifests` grant (RBAC needs `bind`).
+    bindClusterRoles: []
   logLevel: info
   extraEnv: []
 
@@ -133,159 +139,128 @@ provisioner:
     readOnlyRootFilesystem: true
     capabilities:
       drop: [ALL]
-  metrics:
-    service:
-      enabled: true
-  # `helm test <release> -n <ns> --logs`: a Pod running `org-provisioner verify`
-  # with the Deployment's configuration. It re-checks every intervalSeconds
-  # until every check passes or timeoutSeconds elapse (keep that under helm's
-  # --timeout, 5m by default), then prints the checklist and fails on any FAIL.
-  test:
-    enabled: true
-    timeoutSeconds: 240
-    intervalSeconds: 15
 
 # ---------------------------------------------------------------------------
-# Warm worker slots: placeholder pods that run the worker image (so it is in
-# the node's image cache) and sleep, with the worker's requests and a negative
-# priority. A new session's worker pod preempts one and starts in seconds
-# instead of waiting for a node and a ~3 GiB pull; the autoscaler then
-# replaces the placeholder's node. Image, requests, nodeSelector and
-# tolerations are taken from poolTemplate so they cannot drift.
+# Manifests applied into every org namespace, each pass, with server-side
+# apply (key order). Plain Kubernetes objects; metadata.namespace defaults to
+# the org namespace. Placeholders: {{ namespace }}, {{ org_id }},
+# {{ org_name }}, {{ org_slug }}, {{ outpost_id }}, {{ outpost_name }}.
+# Add a key to add an object, set a key to null to drop one. Changing a
+# manifest rolls out on the next pass (running session pods are not replaced).
+# Nothing is ever deleted by the provisioner.
 # ---------------------------------------------------------------------------
-warmWorkers:
-  enabled: false
-  replicas: 1
-  priorityClassValue: -1000
-
-# ---------------------------------------------------------------------------
-# Per-org worker images. Orgs matched by no rule use
-# poolTemplate.pool.worker.overrides.image, so only the exceptions are listed.
-# Shipped as its own ConfigMap (<provisioner>-worker-images), re-read by the
-# provisioner every pass and not part of the Deployment's checksum: a
-# `kubectl edit` takes effect within one poll interval with no restart or helm
-# upgrade (the next `helm upgrade` re-renders it from these values; set
-# managed: false to own the ConfigMap outside Helm). Every image needs a golden
-# home (a devin-golden-home release) before an org can move to it; until then
-# that org keeps its current pool and the pass logs an error for it alone.
-# Schema: provisioner/src/images.rs.
-# ---------------------------------------------------------------------------
-workerImages:
-  managed: true
-  # profile name -> image reference
-  images: {}
-  #  data-science: registry.example.com/devin/devin-outpost-ds:2026.10
-  # Evaluated in order, first match wins. `org` is a glob (* and ?) tested
-  # against the org's id, display name and slug (lowercase, dashes).
-  rules: []
-  #  - { org: "Data Science", image: data-science }
-  #  - { org: "ds-*", image: data-science }
-  #  - { org: org-2f9990d15a5d4f139af863bdff50b3ae, image: data-science }
-
-# ---------------------------------------------------------------------------
-# Pool template, shipped as a ConfigMap and re-read by the provisioner every
-# pass; changing it rolls the new spec to every org on the next pass (running
-# session pods are not replaced). `pool` is OutpostPool.spec minus
-# poolId/tokenSecretRef/apiUrl/resume.volumeDataSource, which are filled per
-# org; `namespace` is the per-org policy. Schema: provisioner/src/template.rs.
-# ---------------------------------------------------------------------------
-poolTemplate:
-  pool:
-    maxConcurrentSessions: 50
-    resume:
-      policy: FilesystemSnapshot
-      # StorageClass whose CSI driver supports snapshots and clone-from-snapshot;
-      # "" = the cluster default.
-      storageClassName: ""
-      # Per-session volume, mounted as the worker's home. Must be >= the golden
-      # volume's size (clones cannot shrink).
-      volumeSize: 20Gi
-      # How long a sleeping session's volume is kept.
-      snapshotTtlSeconds: 604800
-    worker:
-      template:
-        spec:
-          automountServiceAccountToken: false
-          enableServiceLinks: false
-          nodeSelector: {}
-          tolerations: []
-          # Worker image contract: uid/gid 1000, non-root, no capabilities.
-          securityContext:
-            runAsUser: 1000
-            runAsGroup: 1000
-            runAsNonRoot: true
-            fsGroup: 1000
-            fsGroupChangePolicy: OnRootMismatch
-            seccompProfile:
-              type: RuntimeDefault
-          # The image's entrypoint execs the Devin CLI with no init of its own;
-          # sharing the PID namespace makes the pause container PID 1 so it
-          # reaps the desktop's orphans.
-          shareProcessNamespace: true
-          containers:
-            - name: devin-worker
-              imagePullPolicy: IfNotPresent
-              securityContext:
-                allowPrivilegeEscalation: false
-                capabilities:
-                  drop: [ALL]
-              resources:
-                requests: { cpu: "1", memory: 2Gi, ephemeral-storage: 10Gi }
-                limits: { cpu: "3", memory: 8Gi, ephemeral-storage: 40Gi }
-              volumeMounts:
-                - name: dshm
-                  mountPath: /dev/shm
-                # The operator mounts the session volume (`outpost-state`) as
-                # the worker's home, /home/ubuntu. Homebrew's prefix lives
-                # outside the home; keep it on the same volume so brew installs
-                # survive sleep too.
-                - name: outpost-state
-                  mountPath: /home/linuxbrew/.linuxbrew
-                  subPath: .linuxbrew
-          volumes:
-            - name: dshm
-              emptyDir:
-                medium: Memory
-                sizeLimit: 512Mi
-      overrides:
-        # Cognition's production Outposts image, unmodified, pinned to a
-        # release-* tag. The golden home snapshot is matched on this exact
-        # string, so devin-golden-home must be installed with the same value.
-        image: public.ecr.aws/e0h8a4b6/devin-outpost-prod:release-a0f71d0e6a-20261005061956
-        # The operator would run `devin` directly, which skips desktop startup;
-        # the image's entrypoint starts the desktop, then execs `devin` with
-        # the operator's args.
-        command: ["/usr/local/bin/outpost-entrypoint.sh"]
+manifests:
+  # Labels on the org namespace itself (the provisioner creates it; this adds
+  # to it).
   namespace:
-    labels:
-      pod-security.kubernetes.io/enforce: restricted
-      pod-security.kubernetes.io/enforce-version: latest
-      pod-security.kubernetes.io/warn: restricted
-    resourceQuota:
-      pods: "50"
-      requests.cpu: "50"
-      requests.memory: 100Gi
-      limits.cpu: "150"
-      limits.memory: 400Gi
-      # Session volumes outlive their session for snapshotTtlSeconds, so this
-      # bounds retained sessions, not concurrency.
-      persistentvolumeclaims: "2000"
-      requests.storage: 40Ti
-    # ClusterRoles granted to every ServiceAccount of each org namespace. Needed
-    # on OpenShift, where workers keep uid 1000 only through an SCC (see
-    # values-openshift.yaml); each ClusterRole listed here is also added to
-    # the provisioner's `bind` permission.
-    roleBindings: []
-    limitRange:
-      defaultRequest: { cpu: "1", memory: 2Gi }
-      default: { cpu: "3", memory: 8Gi }
-      max: { cpu: "8", memory: 32Gi }
-    networkPolicy:
-      # No inbound traffic to workers.
+    apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: "{{ namespace }}"
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/enforce-version: latest
+        pod-security.kubernetes.io/warn: restricted
+
+  # The org's OutpostPool: OutpostPool.spec as the operator at OPERATOR_REF
+  # defines it. resume.policy StartFresh needs no storage; see README.md for
+  # FilesystemSnapshot (persistent home directories).
+  pool:
+    apiVersion: outposts.cognition.com/v1alpha1
+    kind: OutpostPool
+    metadata:
+      name: org
+    spec:
+      poolId: "{{ outpost_id }}"
+      apiUrl: https://api.devin.ai
+      tokenSecretRef:
+        name: devin-pool-token
+        key: token
+      maxConcurrentSessions: 50
+      resume:
+        policy: StartFresh
+      worker:
+        template:
+          spec:
+            automountServiceAccountToken: false
+            enableServiceLinks: false
+            # Worker image contract: uid/gid 1000, non-root, no capabilities.
+            securityContext:
+              runAsUser: 1000
+              runAsGroup: 1000
+              runAsNonRoot: true
+              fsGroup: 1000
+              fsGroupChangePolicy: OnRootMismatch
+              seccompProfile:
+                type: RuntimeDefault
+            # The image's entrypoint execs the Devin CLI with no init of its
+            # own; sharing the PID namespace makes the pause container PID 1
+            # so it reaps the desktop's orphans.
+            shareProcessNamespace: true
+            containers:
+              - name: devin-worker
+                imagePullPolicy: IfNotPresent
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: [ALL]
+                resources:
+                  requests: { cpu: "1", memory: 2Gi, ephemeral-storage: 10Gi }
+                  limits: { cpu: "3", memory: 8Gi, ephemeral-storage: 40Gi }
+                volumeMounts:
+                  - name: dshm
+                    mountPath: /dev/shm
+            volumes:
+              - name: dshm
+                emptyDir:
+                  medium: Memory
+                  sizeLimit: 512Mi
+        overrides:
+          # Cognition's production Outposts image, pinned to a release-* tag.
+          image: public.ecr.aws/e0h8a4b6/devin-outpost-prod:release-a0f71d0e6a-20261005061956
+          # The operator would run `devin` directly, which skips desktop
+          # startup; the image's entrypoint starts the desktop, then execs
+          # `devin` with the operator's args.
+          command: ["/usr/local/bin/outpost-entrypoint.sh"]
+
+  quota:
+    apiVersion: v1
+    kind: ResourceQuota
+    metadata:
+      name: org
+    spec:
+      hard:
+        pods: "50"
+        requests.cpu: "50"
+        requests.memory: 100Gi
+        limits.cpu: "150"
+        limits.memory: 400Gi
+
+  limits:
+    apiVersion: v1
+    kind: LimitRange
+    metadata:
+      name: org
+    spec:
+      limits:
+        - type: Container
+          defaultRequest: { cpu: "1", memory: 2Gi }
+          default: { cpu: "3", memory: 8Gi }
+          max: { cpu: "8", memory: 32Gi }
+
+  # No inbound traffic to workers; outbound to cluster DNS and the internet
+  # only (Devin API, SCM, package mirrors), never private ranges, the node
+  # network or the cloud metadata service.
+  network-policy:
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: org
+    spec:
+      podSelector: {}
+      policyTypes: [Ingress, Egress]
       ingress: []
       egress:
-        # Cluster DNS (OpenShift: namespace openshift-dns, pods labelled
-        # dns.operator.openshift.io/daemonset-dns=default).
         - to:
             - namespaceSelector:
                 matchLabels:
@@ -296,8 +271,6 @@ poolTemplate:
           ports:
             - { protocol: UDP, port: 53 }
             - { protocol: TCP, port: 53 }
-        # Internet (Devin API, SCM, package mirrors); never private ranges,
-        # the node network or the cloud metadata service.
         - to:
             - ipBlock:
                 cidr: 0.0.0.0/0

@@ -1,26 +1,13 @@
 devin-outposts-platform installed in namespace {{ .Release.Namespace }}.
 
-  operator:     {{ if .Values.operator.enabled }}enabled (watching all namespaces){{ else }}disabled{{ end }}
-  provisioner:  {{ if .Values.provisioner.enabled }}enabled, polling every {{ .Values.provisioner.pollIntervalSeconds }}s{{ else }}disabled{{ end }}
+  operator:       {{ if .Values.operator.enabled }}enabled (watching all namespaces){{ else }}disabled{{ end }}
+  provisioner:    {{ if .Values.provisioner.enabled }}enabled, polling every {{ .Values.provisioner.pollIntervalSeconds }}s{{ else }}disabled{{ end }}
   org namespaces: {{ .Values.provisioner.namespacePrefix }}<org-id>
   outposts:       {{ .Values.provisioner.outpostNamePrefix }}<org-slug>
-
-Each org's OutpostPool is created only once a golden home volume snapshot for
-the worker image below is ready in {{ .Release.Namespace }}:
-
-  {{ .Values.poolTemplate.pool.worker.overrides.image }}
-
-Build it with the devin-golden-home chart (same image), e.g.
-
-  helm install golden-home ../devin-golden-home -n {{ .Release.Namespace }} \
-    --set image={{ .Values.poolTemplate.pool.worker.overrides.image }} \
-    --wait --wait-for-jobs --timeout 20m
-
-Acceptance checklist (waits up to {{ .Values.provisioner.test.timeoutSeconds }}s for the pools, operator and snapshots):
-
-  helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
+  per-org manifests: {{ keys .Values.manifests | sortAlpha | join ", " }}
 
 Check progress:
 
   kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "platform.provisioner.name" . }} -f
+  kubectl get ns -l app.kubernetes.io/managed-by=org-provisioner
   kubectl get outpostpools -A

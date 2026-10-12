@@ -2,7 +2,7 @@ Golden home volume {{ include "golden.name" . }} seeded from
 
   {{ .Values.image }}
 
-Wait for the snapshot, then the provisioner will start binding it into each org:
+Wait for the snapshot:
 
   kubectl -n {{ .Release.Namespace }} wait --for=jsonpath='{.status.readyToUse}'=true \
     --timeout=10m volumesnapshot/{{ include "golden.name" . }}
