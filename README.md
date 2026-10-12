@@ -123,7 +123,7 @@ namespace; `charts/devin-golden-home` builds such a seed volume + snapshot
 from the worker image. A `VolumeSnapshot` is namespaced, so each org namespace
 needs its own, bound to the same storage-side snapshot through a
 pre-provisioned `VolumeSnapshotContent`. Two `manifests` entries do that
-(keys sort before `pool`, so they are applied first):
+(keys are applied in order, so the content comes before the snapshot and both before `pool`):
 
 ```yaml
 provisioner:
@@ -147,7 +147,7 @@ manifests:
       volumeSnapshotRef:
         name: golden-home
         namespace: "{{ namespace }}"
-  golden-home:
+  golden-home-snapshot:
     apiVersion: snapshot.storage.k8s.io/v1
     kind: VolumeSnapshot
     metadata:
