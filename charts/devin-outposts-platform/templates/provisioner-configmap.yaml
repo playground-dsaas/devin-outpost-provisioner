@@ -1,20 +1,37 @@
 {{- if .Values.provisioner.enabled }}
-# The pool template every org's OutpostPool, ResourceQuota, LimitRange and
-# NetworkPolicy are rendered from (schema: provisioner/src/template.rs).
+# Applied into every org namespace each pass, in key order, after the
+# Namespace and token Secret. {{ "{{ namespace }}" }}, {{ "{{ org_id }}" }},
+# {{ "{{ org_name }}" }}, {{ "{{ org_slug }}" }}, {{ "{{ outpost_id }}" }} and
+# {{ "{{ outpost_name }}" }} are substituted by the provisioner. The first
+# document is added by this chart: it lets the operator work in the namespace.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "platform.provisioner.name" . }}-pool-template
+  name: {{ include "platform.provisioner.name" . }}-manifests
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "platform.provisioner.labels" . | nindent 4 }}
-{{- $pt := deepCopy .Values.poolTemplate }}
-{{- $bindings := list (dict "name" (include "platform.provisioner.name" .) "clusterRole" (include "platform.provisioner.orgRole" .) "serviceAccount" (dict "name" (include "platform.provisioner.serviceAccountName" .) "namespace" .Release.Namespace)) }}
-{{- if .Values.operator.enabled }}
-{{- $bindings = append $bindings (dict "name" (include "platform.operator.serviceAccountName" .) "clusterRole" (include "platform.operator.orgRole" .) "serviceAccount" (dict "name" (include "platform.operator.serviceAccountName" .) "namespace" .Release.Namespace)) }}
-{{- end }}
-{{- $_ := set $pt.namespace "roleBindings" (concat (default list $pt.namespace.roleBindings) $bindings) }}
 data:
-  pool-template.yaml: |
-    {{- toYaml $pt | nindent 4 }}
+  manifests.yaml: |
+    {{- if .Values.operator.enabled }}
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: {{ include "platform.operator.serviceAccountName" . }}
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: {{ include "platform.operator.orgRole" . }}
+    subjects:
+      - kind: ServiceAccount
+        name: {{ include "platform.operator.serviceAccountName" . }}
+        namespace: {{ .Release.Namespace }}
+    {{- end }}
+    {{- range $key, $doc := .Values.manifests }}
+    {{- if $doc }}
+    ---
+    # manifests.{{ $key }}
+    {{- toYaml $doc | nindent 4 }}
+    {{- end }}
+    {{- end }}
 {{- end }}

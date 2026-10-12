@@ -1,8 +1,8 @@
 # devin-outpost-provisioner
 
-Everything needed to run Devin Outposts on a customer cluster with one system
-namespace and one namespace + OutpostPool per Devin organization, created
-automatically: two Helm charts (`charts/`) and the org provisioner they deploy
+Runs Devin Outposts on a customer cluster with one system namespace and one
+namespace + OutpostPool per Devin organization, created automatically: a Helm
+chart (`charts/devin-outposts-platform`) and the org provisioner it deploys
 (`provisioner/`). A user who belongs to a Devin organization gets that org's
 pool with no cluster account or manual step; the cluster team touches the
 cluster once, at install. OpenShift is the primary target
@@ -10,270 +10,170 @@ cluster once, at install. OpenShift is the primary target
 cloud, registry or storage driver.
 
 ```
-charts/devin-outposts-platform   operator + org provisioner + pool template + worker-image rules
-charts/devin-golden-home         golden home PVC + VolumeSnapshot, one release per worker image
-provisioner/                     org provisioner (Rust) and its Dockerfile
+charts/devin-outposts-platform   operator + org provisioner + per-org manifests
+charts/devin-golden-home         optional: golden home PVC + VolumeSnapshot for persistent homes
+provisioner/                     org provisioner (Rust, ~750 lines) and its Dockerfile
 Makefile                         lint / package / provisioner-check / provisioner-image / operator-image
 ```
 
 ```
-<system namespace>                       (helm release: devin-outposts-platform)
-├─ outposts operator        watches every namespace, runs worker pods
-├─ org-provisioner          polls Devin orgs, creates everything below
-└─ worker-home-<tag>        golden home PVC + VolumeSnapshot (helm release: devin-golden-home)
+<system namespace>                  (helm release: devin-outposts-platform)
+├─ outposts operator                watches every namespace, runs worker pods
+└─ org-provisioner                  polls Devin orgs, creates everything below
 
-<namespacePrefix><org-id>                (created by the provisioner, not Helm)
-├─ OutpostPool "org"        resume.volumeDataSource -> worker-home-<tag>
-├─ Secret devin-pool-token
-├─ ResourceQuota / LimitRange / NetworkPolicy
-├─ VolumeSnapshot worker-home-<tag>   (binding to the golden snapshot)
-└─ worker pods              created by the operator per session
+<namespacePrefix><org-id>           (created by the provisioner, not Helm)
+├─ Secret devin-pool-token          the Devin token, for the operator
+├─ RoleBinding outposts-operator    lets the operator work in the namespace
+├─ ... everything under `manifests` in values.yaml:
+│    OutpostPool "org", ResourceQuota, LimitRange, NetworkPolicy, PSA labels
+└─ worker pods                      created by the operator per session
 ```
 
-| chart | what it installs | how often |
-|---|---|---|
-| `devin-outposts-platform` | operator (`devin-outposts-k8s` subchart, fetched) + org provisioner + pool template | once; upgrade to change settings |
-| `devin-golden-home` | PVC seeded from the worker image + VolumeSnapshot of it | once per distinct worker image (default + each `workerImages.images` entry) |
+## How the provisioner works
+
+Every `pollIntervalSeconds` it lists the Devin organizations and Outposts
+with the service-user token and, for each organization not in
+`excludeOrgIds`:
+
+1. finds the Outpost named `<outpostNamePrefix><org slug>` restricted to that
+   org, or creates it;
+2. server-side-applies the namespace `<namespacePrefix><12 hex of the org id>`
+   (labels `app.kubernetes.io/managed-by=org-provisioner`,
+   `outposts.cognition.com/org-id`) and the token Secret into it;
+3. applies every document in the mounted manifests ConfigMap (the chart's
+   `manifests` values) with `{{ namespace }}`, `{{ org_id }}`,
+   `{{ org_name }}`, `{{ org_slug }}`, `{{ outpost_id }}`, `{{ outpost_name }}`
+   substituted;
+4. makes the Outpost the org's default platform if the org has none.
+
+That is all it does. It never deletes anything: an org that disappears from
+Devin keeps its namespace until someone removes it. The manifests file is
+re-read every pass, so a `helm upgrade` (or `kubectl edit` of the ConfigMap)
+changes every org on the next pass. The provisioner does not know what kinds
+are in the list; adding an object to every org namespace is a values change
+plus the matching RBAC rule.
 
 ## Prerequisites
 
-- Kubernetes 1.28+ / OpenShift 4.14+, with the CSI snapshot controller, a
-  `VolumeSnapshotClass`, and a StorageClass whose driver supports snapshots and
-  clone-from-snapshot (EBS, PowerScale/Isilon, ...).
-- Three images in a registry the cluster can pull from (set the repository/tag
-  and `imagePullSecrets` values for each):
-  - operator: `ghcr.io/cognitionai/devin-outposts-k8s:sha-<OPERATOR_REF>`, published
-    by https://github.com/CognitionAI/devin-outpost-k8s for the commit in
-    `charts/devin-outposts-platform/OPERATOR_REF` (the chart's default; mirror it
-    if the cluster cannot reach ghcr.io). To build it yourself instead:
-    `make operator-image OPERATOR_IMAGE=<registry>/devin/devin-outposts-k8s:<tag>`.
-    Any image built from that commit or a later one works; older operators do
-    not know `resume.volumeDataSource`/`homeDir` and reject the pools.
-  - org-provisioner: `make provisioner-image PROVISIONER_IMAGE=<registry>/devin/org-provisioner:<tag>`
-    (`provisioner/Dockerfile`).
-  - worker: Cognition's `devin-outpost-prod:<release tag>`, unchanged, mirrored
-    if the cluster cannot reach `public.ecr.aws`.
-- A Devin service-user token that can list organizations and manage Outposts,
-  stored as a Kubernetes Secret in the system namespace (below).
-- The operator subchart, which is not committed: `make operator-chart` copies
-  `charts/devin-outposts-k8s` from the operator repository at `OPERATOR_REF`
-  into `charts/devin-outposts-platform/charts/`. `make package` does this and
-  writes both charts to `dist/*.tgz` with the subchart bundled, which is the
-  form to hand to a cluster team. Without make: clone that repo, check out the
-  commit, and copy the directory.
+- Kubernetes >= 1.30 / OpenShift >= 4.17 (ValidatingAdmissionPolicy; set
+  `provisioner.admissionPolicy.enabled: false` on older clusters and accept
+  that RBAC alone scopes the provisioner).
+- A Devin **enterprise service-user token** that can list organizations and
+  manage Outposts, in a Secret in the system namespace.
+- Images reachable from the cluster: the operator
+  (`ghcr.io/cognitionai/devin-outposts-k8s:sha-<OPERATOR_REF>`), the
+  provisioner (`make provisioner-image`, push to your registry) and the
+  worker image in `manifests.pool.spec.worker.overrides.image`.
+- Worker nodes with ~3 CPU / 8 GiB free per concurrent session (defaults in
+  `manifests.pool`).
 
 ## Install
 
 ```sh
 NS=devin-system
 kubectl create namespace $NS
-kubectl label namespace $NS pod-security.kubernetes.io/enforce=restricted   # optional, not on OpenShift
 kubectl -n $NS create secret generic devin-outposts-token --from-literal=token="$DEVIN_TOKEN"
 
-# 1. operator + provisioner. Copy values-openshift.yaml, fill in registry paths,
-#    Devin API URL, acceptorId, storage class and image tags, and keep it in git.
-helm upgrade --install outposts charts/devin-outposts-platform -n $NS -f my-values.yaml
+make operator-chart            # fetches the operator subchart at OPERATOR_REF
+# Copy values-openshift.yaml, fill in registry paths, the Devin API URL (twice:
+# provisioner.devinApiUrl and manifests.pool.spec.apiUrl), acceptorId and image
+# tags, and keep it in git.
+helm install outposts charts/devin-outposts-platform -n $NS -f my-values.yaml
 # On clusters that enforce the restricted PSS level (not OpenShift) add:
 #   --post-renderer charts/devin-outposts-platform/post-render.sh
 
-# 2. golden home volume for the worker image named in poolTemplate.pool.worker.overrides.image.
-#    OpenShift: its seed Job runs as the image's uid 1000, so the system namespace
-#    needs the SCC binding the provisioner creates for org namespaces, once:
-#    oc adm policy add-role-to-group system:openshift:scc:nonroot-v2 system:serviceaccounts:$NS -n $NS
-helm install golden-home-a0f71d0e6a charts/devin-golden-home -n $NS \
-  --set image=registry.example.com/devin/devin-outpost-prod:release-a0f71d0e6a-20261005061956 \
-  --set storageClassName=isilon --set volumeSnapshotClassName=<class> \
-  --wait --wait-for-jobs --timeout 20m
+kubectl -n $NS logs deploy/org-provisioner -f
+kubectl get ns -l app.kubernetes.io/managed-by=org-provisioner
+kubectl get outpostpools -A
 ```
 
-Order does not matter: until the snapshot is `readyToUse`, each provisioner
-pass logs that no golden volume is ready and retries on the next pass. Once it
-is, every org gets its namespace, Outpost and OutpostPool within one poll
-interval, and its default platform (`PUT
-/v3beta1/organizations/{org_id}/default-platform`) is pointed at that Outpost
-if it was unset, so its sessions land here with no UI step. A default that
-already points elsewhere (another cluster's Outpost, a hosted platform) is left
-alone. The Devin token therefore needs `ManageOrgSettings` on every org; a
-refusal is logged as that org's reconcile error and fails `verify`.
-
-## Changing the worker image
-
-1. `helm install golden-home-<newtag> charts/devin-golden-home --set image=<new image> --wait --wait-for-jobs`
-2. `helm upgrade outposts charts/devin-outposts-platform --reuse-values --set poolTemplate.pool.worker.overrides.image=<new image>`
-3. The provisioner rebinds the new snapshot into every org namespace and
-   updates each pool on its next pass. New sessions clone the new golden home;
-   existing session volumes are untouched.
-4. `helm uninstall golden-home-<oldtag>` once no pool references it. The
-   snapshot itself is a Helm hook resource and is kept; only the seed PVC and
-   Job are removed.
-
-## Per-org worker images
-
-Every org gets `poolTemplate.pool.worker.overrides.image` unless a rule in
-`workerImages` says otherwise, so only the exceptions are listed and a few
-rules cover thousands of orgs:
-
-```yaml
-workerImages:
-  images:
-    data-science: registry.example.com/devin/devin-outpost-ds:2026.10
-  rules:                       # in order, first match wins
-    - { org: "Data Science", image: data-science }   # display name
-    - { org: "ds-*",         image: data-science }   # glob on the slug
-    - { org: org-2f9990d15a5d4f139af863bdff50b3ae, image: data-science }
-```
-
-`org` is a glob (`*`, `?`) tested against the org's id, display name and
-slug (lowercase, dashes). The chart ships this as its own ConfigMap,
-`<provisioner>-worker-images`, which the provisioner re-reads every pass and
-which does not restart the Deployment when it changes, so moving an org is
-`kubectl -n $NS edit configmap org-provisioner-worker-images` and waiting one
-poll interval (the next `helm upgrade` re-renders it from values; set
-`workerImages.managed: false` to own the ConfigMap outside Helm). Each image
-needs its own golden home first (`helm install golden-home-<x> charts/devin-golden-home
---set image=<that image>`); an org pointed at an image without a ready
-snapshot keeps its current pool, and only that org is reported as an error.
-When an org moves, its existing sessions keep their volumes; new sessions use
-the new image and its golden home.
-
-The pool template is validated by the provisioner's tests
-(`PoolTemplate::parse_helm_values` reads `values.yaml` + `values-openshift.yaml`), so
-`make provisioner-check` catches a mistyped key before a deploy does.
+Within one poll interval every organization has a namespace, an OutpostPool
+and an Outpost set as its default platform; the first session an org member
+starts lands on it.
 
 ## Values worth knowing
 
-`devin-outposts-platform`
-
 | key | default | |
 |---|---|---|
-| `provisioner.devinApiUrl` | `https://api.devin.ai` | enterprise hosts use their own URL; also written to every pool's `apiUrl` |
-| `provisioner.token.existingSecret` / `.awsSecretId` | — | exactly one; Kubernetes Secret (key `token`), or AWS Secrets Manager on EKS |
-| `provisioner.namespacePrefix` | `outpost-namespace-` | org namespace = prefix + org id |
-| `provisioner.outpostNamePrefix` | `outpost-` | Outpost name = prefix + org slug |
+| `provisioner.devinApiUrl` | `https://api.devin.ai` | enterprise hosts: `https://<host>/api` |
+| `provisioner.token.existingSecret` | — | required; Secret in the release namespace, key `token` |
+| `provisioner.namespacePrefix` | `devin-org-` | org namespace = prefix + 12 hex of the org id |
+| `provisioner.outpostNamePrefix` | `outpost-` | Outpost name = prefix + org slug; give every cluster of one Devin account its own prefix (and `operator.operator.acceptorId`) |
 | `provisioner.pollIntervalSeconds` | `60` | |
-| `provisioner.deprovisionGraceSeconds` | `3600` | how long an org must be gone before its namespace/Outpost are deleted |
 | `provisioner.excludeOrgIds` | `[]` | orgs never provisioned (e.g. the enterprise-level org) |
-| `warmWorkers.enabled` / `.replicas` | `false` / `1` | standby pods running the worker image on worker nodes; image, requests and scheduling come from `poolTemplate` |
-| `poolTemplate.pool` | see values.yaml | becomes each org's `OutpostPool.spec`; worker pod spec, resume policy, image |
-| `poolTemplate.namespace` | see values.yaml | per-org PSA labels, ResourceQuota, LimitRange, NetworkPolicy |
-| `workerImages.images` / `.rules` | `{}` / `[]` | named images and ordered org → image rules (see above); `workerImages.managed: false` leaves the ConfigMap to you |
-| `operator.*` | | passed straight to the `devin-outposts-k8s` subchart; `operator.defaultPool.enabled` must stay `false` |
+| `provisioner.rbac.rules` / `.bindClusterRoles` | rules for the default manifests | one rule per kind in `manifests`; ClusterRoles any RoleBinding in `manifests` grants |
+| `manifests.<key>` | namespace, pool, quota, limits, network-policy | one Kubernetes object each, applied into every org namespace; add a key to add an object, set one to `null` to drop it |
+| `manifests.pool.spec` | `StartFresh`, 50 sessions, worker pod spec | `OutpostPool.spec` as the operator defines it; `poolId` is `{{ outpost_id }}` |
+| `operator.*` | | passed to the `devin-outposts-k8s` subchart; `operator.defaultPool.enabled` must stay `false` |
 
-`devin-golden-home`
+Changing the worker image is editing `manifests.pool.spec.worker.overrides.image`
+and `helm upgrade`; every pool is updated on the next pass and new sessions
+use it (running ones are not replaced).
 
-| key | default | |
-|---|---|---|
-| `image` | devin-outpost-prod release | must equal `poolTemplate.pool.worker.overrides.image` or a `workerImages.images` entry exactly |
-| `storageClassName`, `volumeSnapshotClassName` | `""` (cluster defaults) | |
-| `size` | `20Gi` | must be <= the pool's `resume.volumeSize` |
+### Persistent home directories
+
+The default `resume.policy: StartFresh` needs no storage and matches the
+operator's own default. The operator's `FilesystemSnapshot` policy gives each
+session a volume cloned from a `resume.volumeDataSource` in the pool's
+namespace; `charts/devin-golden-home` builds such a seed volume + snapshot
+from the worker image. Getting that snapshot into every org namespace is
+cluster-specific (a pre-provisioned `VolumeSnapshotContent` per org, or a
+storage driver with cross-namespace data sources) and is not something the
+provisioner does by default; `manifests` can carry the per-org objects once the
+cluster team has settled the approach.
 
 ## OpenShift notes
 
-- Provisioner and operator run under `restricted-v2` as is (`values-openshift.yaml`
-  unsets the fixed uid so the SCC can assign one).
+- Provisioner and operator run under `restricted-v2` as is
+  (`values-openshift.yaml` unsets the fixed uid so the SCC assigns one).
 - Worker pods run as uid 1000 (the image's user), which `restricted-v2`
-  rejects. `values-openshift.yaml` sets `poolTemplate.namespace.roleBindings`
-  so the provisioner binds `system:openshift:scc:nonroot-v2` to every
-  ServiceAccount of each org namespace as it creates it; no `oc adm policy`
-  step per org. Use a custom SCC's `system:openshift:scc:<name>` ClusterRole
-  instead if `nonroot-v2` is not allowed. The `devin-golden-home` seed Job
-  runs as uid 1000 too, in the system namespace, which the provisioner does
-  not manage: bind the same ClusterRole there by hand (see the install steps).
-- One Outpost per org *per cluster*: the provisioner adopts only Outposts
-  named `<outpostNamePrefix><org slug>`, so give every cluster of an account
-  its own `provisioner.outpostNamePrefix` (and `operator.operator.acceptorId`);
-  two clusters on one Outpost would both claim its sessions.
+  rejects. `values-openshift.yaml` adds a RoleBinding of
+  `system:openshift:scc:nonroot-v2` to every org namespace (`manifests.scc`)
+  and lists that ClusterRole in `provisioner.rbac.bindClusterRoles`. Use a
+  custom SCC's `system:openshift:scc:<name>` ClusterRole instead if
+  `nonroot-v2` is not allowed.
 - The default NetworkPolicy's DNS rule targets `kube-system`/`kube-dns`;
-  OpenShift's resolver is in `openshift-dns`. `values-openshift.yaml` allows
-  DNS to `openshift-dns` and the public internet only (private ranges and
-  169.254/16 excluded); add `ipBlock` rules for internal git, package mirrors
-  or proxies.
+  `values-openshift.yaml` replaces it with `openshift-dns` on port 5353 and
+  allows the public internet only (private ranges and 169.254/16 excluded);
+  add `ipBlock` rules for internal git, package mirrors or proxies.
 - Access to a pool is governed by Devin organization membership. Users never
   need an OpenShift account.
 
 ## Permissions
 
-What the chart grants (`templates/provisioner-rbac.yaml`, `templates/operator-rbac.yaml`).
-Nothing outside the system namespace and the `<namespacePrefix>*` namespaces
-is writable by either component.
+What the chart grants (`templates/provisioner-rbac.yaml`,
+`templates/operator-rbac.yaml`). Nothing outside the system namespace and the
+`<namespacePrefix>*` namespaces is writable by either component.
 
-| who | cluster-wide | per org namespace (RoleBinding the provisioner writes there) | system namespace |
-|---|---|---|---|
-| provisioner | namespaces: create/patch/delete; RoleBindings: create/patch; `bind` on the named ClusterRoles only; VolumeSnapshotContents; read OutpostPools | quotas, LimitRanges, NetworkPolicies, the pool token Secret, VolumeSnapshots, OutpostPools | read golden VolumeSnapshots |
-| operator | read OutpostPools and Pods | worker Pods, Secrets, PVCs, OutpostPool status | leader-election Lease, acceptor-id ConfigMap |
+| who | cluster-wide ClusterRole | scoped how |
+|---|---|---|
+| provisioner | namespaces get/list/create/patch; Secrets get/create/patch; RoleBindings get/create/patch + `bind` on the operator's org ClusterRole (and `rbac.bindClusterRoles`); `rbac.rules` (default: ResourceQuota, LimitRange, NetworkPolicy, OutpostPool) | ValidatingAdmissionPolicy: every write must be a namespace named `<namespacePrefix>*` or an object inside one |
+| operator | read OutpostPools and Pods | writes (worker Pods, Secrets, PVCs, pool status) only through the RoleBinding the provisioner puts in each org namespace; leader-election Lease and ConfigMap in the system namespace |
 
-- No cluster-wide Secret access for either component. The operator subchart's
-  own ClusterRole is disabled (`operator.rbac.create: false`).
-- RBAC cannot restrict namespace or RoleBinding writes by name, so a
-  ValidatingAdmissionPolicy (`provisioner.admissionPolicy.enabled`, Kubernetes
-  >= 1.30 / OpenShift >= 4.17) rejects any provisioner request that creates,
-  changes or deletes a namespace not named `<namespacePrefix>*`, a RoleBinding
-  outside those namespaces, or a VolumeSnapshotContent it did not label.
+- The operator subchart's own ClusterRole is disabled (`operator.rbac.create: false`).
+- The provisioner applies namespaced objects only (plus the org namespaces
+  themselves); the admission policy rejects any other cluster-scoped write.
 - Worker pods mount no ServiceAccount token, so a session has no Kubernetes
   API access at all.
 
 ## Validation
 
-Offline, what CI runs on every change (no cluster):
-
-- `make lint`: fetches the operator subchart at `OPERATOR_REF`, then
-  `helm lint` + `helm template` + `kubeconform` (with the OutpostPool CRD
-  schema) on both charts with the default and OpenShift values.
-- `make provisioner-check`: `cargo fmt`, `clippy -D warnings`, and the tests,
-  which drive the provisioner and the verifier against an in-memory Devin API
-  and cluster and parse the shipped chart values as the pool template.
-- `make package`: both charts as `dist/*.tgz`, operator subchart included.
-
-On a cluster, after the install steps above and once the golden home release
-has finished:
+Offline, what CI runs:
 
 ```sh
-helm test outposts -n $NS --logs
+make lint               # helm lint/template + kubeconform, default and OpenShift values
+make provisioner-check  # cargo fmt, clippy -D warnings, tests
+make provisioner-image  # docker buildx, linux/amd64
 ```
 
-runs a Pod from the provisioner image (`org-provisioner verify`,
-`provisioner/src/verify.rs`) with the Deployment's ServiceAccount, token and
-ConfigMaps. It re-reads the cluster every 15 s for up to 4 min
-(`provisioner.test.*`; keep that under `helm test --timeout`, 5 m by default)
-and then prints one line per check, failing the test if any `FAIL` remains:
-
-| check | passes when |
-|---|---|
-| `devin-api/organizations`, `devin-api/outposts` | the token lists the enterprise's organizations and the account's Outposts at `provisioner.devinApiUrl` |
-| `golden-snapshot <image>` | a `readyToUse` golden VolumeSnapshot for the default worker image, and for every image an org resolves to, exists in the system namespace |
-| `<ns>/namespace` | the org's namespace exists and is not marked orphaned |
-| `<ns>/pool` | the OutpostPool exists and its `poolId` is an Outpost of the account named with this install's `outpostNamePrefix` (another cluster's Outpost otherwise) and restricted to that org (`WARN` if unrestricted) |
-| `<ns>/pool/image` | the pool runs the image the rules resolve for that org |
-| `<ns>/operator` | the operator has synced the pool: `status.phase: Ready` (`Unauthorized`/`Degraded` carry the operator's error message) |
-| `<ns>/token-secret` | `devin-pool-token` exists with its `token` key |
-| `<ns>/golden-binding` | the org's VolumeSnapshot binding is `readyToUse` and the pool clones session volumes from it |
-| `<ns>/rolebinding/<name>` | each `poolTemplate.namespace.roleBindings` entry binds its ClusterRole to `system:serviceaccounts:<ns>` (OpenShift: the SCC that admits uid 1000) |
-| `<ns>/default-platform` | the org's default platform (Devin API) is this Outpost; `FAIL` while unset (the provisioner could not set it: token lacks `ManageOrgSettings`); `WARN` when it points elsewhere by choice |
-| `<ns>/orphaned` | `WARN` for a namespace whose org has left the enterprise and is inside the grace period |
-
-An org with no namespace fails `<ns>/namespace`: either the provisioner has not
-run yet, or Devin refuses to restrict an Outpost to that org (the
-enterprise-level org), in which case add it to `provisioner.excludeOrgIds`.
-Everything a `FAIL` says is also in `kubectl -n $NS logs deploy/org-provisioner`
-(provisioner side), `kubectl get opool -A` (operator side, `Phase` column) and
-`kubectl -n $NS get volumesnapshot` (storage side). A failed test Pod is kept
-until the next run: `kubectl -n $NS logs org-provisioner-verify`.
-
-What a clean report does not prove: that a worker pod is admitted (the SCC
-actually allows uid 1000), starts the desktop and reaches Devin. The last
-acceptance step is a real session in one of the orgs while watching
-`kubectl -n <ns> get pods -w`.
-
-This layout (operator and provisioner in one system namespace, a namespace and
-pool per org, golden home volumes per image, per-org image rules, sleep/wake
-persistence) has been run end to end from these charts on an EKS cluster. It
-has not yet been installed on OpenShift; the SCC binding, CSI snapshot and DNS
-points above are the known differences, and `helm test` is what should be run
-there first.
+The provisioner validates the manifests file at startup (YAML, `apiVersion` +
+`kind`, known placeholders) and exits on error, so a bad values change shows
+up as a crash-looping pod right after `helm upgrade`, before any org is
+touched. Logs are JSON; `RUN_ONCE=1` runs a single pass and exits.
 
 ## Upstream
 
-The operator is https://github.com/CognitionAI/devin-outpost-k8s, consumed
-unmodified at the commit in `charts/devin-outposts-platform/OPERATOR_REF` (its
-chart as the `operator` subchart, its crate for the OutpostPool types in
-`provisioner/Cargo.toml`). Bump the three together.
+The operator is `CognitionAI/devin-outpost-k8s` at the commit in
+`charts/devin-outposts-platform/OPERATOR_REF`, consumed unmodified. Bump
+`OPERATOR_REF` and `operator.image.tag` together, and check `manifests.pool.spec`
+against the new `OutpostPool` CRD.

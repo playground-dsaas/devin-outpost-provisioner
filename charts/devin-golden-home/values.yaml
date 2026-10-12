@@ -1,7 +1,5 @@
-# Worker image to seed from. Must be byte-for-byte an image in the platform
-# chart: poolTemplate.pool.worker.overrides.image or one under
-# workerImages.images. The provisioner picks the snapshot whose
-# devin.cognition.com/worker-image annotation equals the org's image.
+# Worker image to seed from: the platform chart's
+# manifests.pool.spec.worker.overrides.image.
 image: public.ecr.aws/e0h8a4b6/devin-outpost-prod:release-a0f71d0e6a-20261005061956
 imagePullPolicy: IfNotPresent
 imagePullSecrets: []

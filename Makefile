@@ -55,7 +55,7 @@ lint: operator-chart ## helm lint/template + kubeconform on both charts (default
 	  --set provisioner.image.tag=example --set provisioner.token.existingSecret=devin-outposts-token
 	helm template outposts $(PLATFORM_CHART) -n devin-system \
 	  --set provisioner.image.repository=example/org-provisioner --set provisioner.image.tag=example \
-	  --set provisioner.token.existingSecret=devin-outposts-token --set warmWorkers.enabled=true \
+	  --set provisioner.token.existingSecret=devin-outposts-token \
 	  --post-renderer $(PLATFORM_CHART)/post-render.sh | $(KUBECONFORM) -skip ServiceMonitor
 	helm lint $(PLATFORM_CHART) -f $(PLATFORM_CHART)/values-openshift.yaml
 	helm template outposts $(PLATFORM_CHART) -n devin-system -f $(PLATFORM_CHART)/values-openshift.yaml \
@@ -81,7 +81,7 @@ provisioner-clippy: ## cargo clippy, warnings are errors
 	cd $(PROVISIONER_DIR) && cargo clippy --all-targets --locked -- -D warnings
 
 .PHONY: provisioner-test
-provisioner-test: ## cargo test (unit + mocked Devin/Kubernetes integration tests)
+provisioner-test: ## cargo test
 	cd $(PROVISIONER_DIR) && cargo test --locked
 
 .PHONY: provisioner-check
