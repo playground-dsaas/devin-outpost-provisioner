@@ -199,12 +199,14 @@ What the chart grants (`templates/provisioner-rbac.yaml`,
 
 | who | cluster-wide ClusterRole | scoped how |
 |---|---|---|
-| provisioner | namespaces get/list/create/patch; Secrets get/create/patch; RoleBindings get/create/patch + `bind` on the operator's org ClusterRole (and `rbac.bindClusterRoles`); `rbac.rules` (default: ResourceQuota, LimitRange, NetworkPolicy, OutpostPool) | ValidatingAdmissionPolicy: every write must be a namespace named `<namespacePrefix>*` or an object inside one |
+| provisioner | namespaces get/list/create/patch (+delete with `deleteOrphanNamespaces`); Secrets get/create/patch; RoleBindings get/create/patch + `bind` on the operator's org ClusterRole (and `rbac.bindClusterRoles`); `rbac.rules` (default: ResourceQuota, LimitRange, NetworkPolicy, OutpostPool) | ValidatingAdmissionPolicy: every write must be an object in a namespace named `<namespacePrefix>*` or a cluster-scoped object named `<namespacePrefix>*` |
 | operator | read OutpostPools and Pods | writes (worker Pods, Secrets, PVCs, pool status) only through the RoleBinding the provisioner puts in each org namespace; leader-election Lease and ConfigMap in the system namespace |
 
 - The operator subchart's own ClusterRole is disabled (`operator.rbac.create: false`).
-- The provisioner applies namespaced objects only (plus the org namespaces
-  themselves); the admission policy rejects any other cluster-scoped write.
+- Cluster-scoped objects the provisioner may write are the org namespaces and
+  anything else named `<namespacePrefix>*` (e.g. a per-org
+  `VolumeSnapshotContent`); the admission policy rejects any other
+  cluster-scoped write.
 - Worker pods mount no ServiceAccount token, so a session has no Kubernetes
   API access at all.
 
