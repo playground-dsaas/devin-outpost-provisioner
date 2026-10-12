@@ -44,10 +44,13 @@ with the service-user token and, for each organization not in
    `manifests` values) with `{{ namespace }}`, `{{ org_id }}`,
    `{{ org_name }}`, `{{ org_slug }}`, `{{ outpost_id }}`, `{{ outpost_name }}`
    substituted;
-4. makes the Outpost the org's default platform if the org has none.
+4. makes the Outpost the org's default platform if the org has none;
+5. deletes the namespace of any org that no longer exists in Devin
+   (`deleteOrphanNamespaces`, on by default; an empty org list is treated as
+   an API failure and deletes nothing).
 
-That is all it does. It never deletes anything: an org that disappears from
-Devin keeps its namespace until someone removes it. The manifests file is
+That is all it does. Outposts and the objects in `manifests` are never
+deleted; drop a key and the objects already created stay. The manifests file is
 re-read every pass, so a `helm upgrade` (or `kubectl edit` of the ConfigMap)
 changes every org on the next pass. The provisioner does not know what kinds
 are in the list; adding an object to every org namespace is a values change
@@ -101,6 +104,7 @@ starts lands on it.
 | `provisioner.outpostNamePrefix` | `outpost-` | Outpost name = prefix + org slug; give every cluster of one Devin account its own prefix (and `operator.operator.acceptorId`) |
 | `provisioner.pollIntervalSeconds` | `60` | |
 | `provisioner.excludeOrgIds` | `[]` | orgs never provisioned (e.g. the enterprise-level org) |
+| `provisioner.deleteOrphanNamespaces` | `true` | delete the namespace of an org that no longer exists (adds the `delete` verb on namespaces) |
 | `provisioner.rbac.rules` / `.bindClusterRoles` | rules for the default manifests | one rule per kind in `manifests`; ClusterRoles any RoleBinding in `manifests` grants |
 | `manifests.<key>` | namespace, pool, quota, limits, network-policy | one Kubernetes object each, applied into every org namespace; add a key to add an object, set one to `null` to drop it |
 | `manifests.pool.spec` | `StartFresh`, 50 sessions, worker pod spec | `OutpostPool.spec` as the operator defines it; `poolId` is `{{ outpost_id }}` |
@@ -116,11 +120,59 @@ The default `resume.policy: StartFresh` needs no storage and matches the
 operator's own default. The operator's `FilesystemSnapshot` policy gives each
 session a volume cloned from a `resume.volumeDataSource` in the pool's
 namespace; `charts/devin-golden-home` builds such a seed volume + snapshot
-from the worker image. Getting that snapshot into every org namespace is
-cluster-specific (a pre-provisioned `VolumeSnapshotContent` per org, or a
-storage driver with cross-namespace data sources) and is not something the
-provisioner does by default; `manifests` can carry the per-org objects once the
-cluster team has settled the approach.
+from the worker image. A `VolumeSnapshot` is namespaced, so each org namespace
+needs its own, bound to the same storage-side snapshot through a
+pre-provisioned `VolumeSnapshotContent`. Two `manifests` entries do that
+(keys sort before `pool`, so they are applied first):
+
+```yaml
+provisioner:
+  rbac:
+    rules:
+      - apiGroups: [snapshot.storage.k8s.io]
+        resources: [volumesnapshotcontents, volumesnapshots]
+        verbs: [get, create, patch]
+manifests:
+  golden-home-content:
+    apiVersion: snapshot.storage.k8s.io/v1
+    kind: VolumeSnapshotContent
+    metadata:
+      name: "{{ namespace }}-golden-home"
+    spec:
+      deletionPolicy: Retain
+      driver: <csi driver>                       # e.g. ebs.csi.aws.com
+      volumeSnapshotClassName: <class>
+      source:
+        snapshotHandle: <handle>                 # status.snapshotHandle of the golden snapshot's content
+      volumeSnapshotRef:
+        name: golden-home
+        namespace: "{{ namespace }}"
+  golden-home:
+    apiVersion: snapshot.storage.k8s.io/v1
+    kind: VolumeSnapshot
+    metadata:
+      name: golden-home
+    spec:
+      volumeSnapshotClassName: <class>
+      source:
+        volumeSnapshotContentName: "{{ namespace }}-golden-home"
+  pool:
+    spec:
+      resume:
+        policy: FilesystemSnapshot
+        volumeSize: 20Gi
+        storageClassName: <storage class>
+        volumeDataSource:
+          apiGroup: snapshot.storage.k8s.io
+          kind: VolumeSnapshot
+          name: golden-home
+```
+
+`VolumeSnapshotContent` is cluster-scoped, so its name starts with the org
+namespace: the admission policy only lets the provisioner write cluster-scoped
+objects named `<namespacePrefix>*`. The handle comes from the golden-home
+release:
+`kubectl get volumesnapshotcontent -o jsonpath='{.items[?(@.spec.volumeSnapshotRef.name=="worker-home-<tag>")].status.snapshotHandle}'`.
 
 ## OpenShift notes
 

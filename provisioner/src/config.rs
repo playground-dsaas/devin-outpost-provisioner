@@ -21,6 +21,8 @@ pub struct Config {
     pub outpost_name_prefix: String,
     /// Organizations never provisioned (e.g. the enterprise-level org).
     pub exclude_org_ids: BTreeSet<String>,
+    /// Delete the namespace of an organization that no longer exists.
+    pub delete_orphan_namespaces: bool,
     /// Run one pass and exit.
     pub once: bool,
 }
@@ -55,6 +57,10 @@ impl Config {
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
                 .collect(),
+            delete_orphan_namespaces: !matches!(
+                env_or("DELETE_ORPHAN_NAMESPACES", "true").as_str(),
+                "0" | "false"
+            ),
             once: matches!(env_or("RUN_ONCE", "").as_str(), "1" | "true"),
         })
     }

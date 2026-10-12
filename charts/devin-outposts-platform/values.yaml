@@ -93,6 +93,9 @@ provisioner:
   outpostNamePrefix: outpost-
   # Org IDs never provisioned (e.g. the enterprise-level org).
   excludeOrgIds: []
+  # Delete the namespace (and so the pool, token and session volumes) of an
+  # organization that no longer exists. Outposts and manifests are never deleted.
+  deleteOrphanNamespaces: true
   # ValidatingAdmissionPolicy confining every write by the provisioner to
   # <namespacePrefix>* namespaces (Kubernetes >= 1.30 / OpenShift >= 4.17).
   admissionPolicy:
@@ -147,7 +150,7 @@ provisioner:
 # {{ org_name }}, {{ org_slug }}, {{ outpost_id }}, {{ outpost_name }}.
 # Add a key to add an object, set a key to null to drop one. Changing a
 # manifest rolls out on the next pass (running session pods are not replaced).
-# Nothing is ever deleted by the provisioner.
+# Removing a key leaves the objects already created in place.
 # ---------------------------------------------------------------------------
 manifests:
   # Labels on the org namespace itself (the provisioner creates it; this adds
