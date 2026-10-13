@@ -43,7 +43,8 @@ with the service-user token and, for each organization not in
 3. applies every document in the mounted manifests ConfigMap (the chart's
    `manifests` values) with `{{ namespace }}`, `{{ org_id }}`,
    `{{ org_name }}`, `{{ org_slug }}`, `{{ outpost_id }}`, `{{ outpost_name }}`
-   substituted;
+   substituted, when the namespace is new or the rendered documents changed
+   (hash in the namespace annotation `outposts.cognition.com/manifests-hash`);
 4. makes the Outpost the org's default platform if the org has none;
 5. deletes the namespace of any org that no longer exists in Devin
    (`deleteOrphanNamespaces`, on by default; an empty org list is treated as
@@ -138,10 +139,6 @@ manifests:
     kind: VolumeSnapshotContent
     metadata:
       name: "{{ namespace }}-golden-home"
-      annotations:
-        # The snapshot controller writes the VolumeSnapshot's uid into
-        # volumeSnapshotRef; re-applying would clear it and unbind the pair.
-        outposts.cognition.com/apply-once: "true"
     spec:
       deletionPolicy: Retain
       driver: <csi driver>                       # e.g. ebs.csi.aws.com
