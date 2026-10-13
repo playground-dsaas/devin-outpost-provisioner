@@ -24,7 +24,7 @@ spec:
       expression: request.userInfo.username == {{ printf "system:serviceaccount:%s:%s" .Release.Namespace (include "platform.provisioner.serviceAccountName" .) | squote }}
   validations:
     - expression: >-
-        (request.namespace == '' ? request.name : request.namespace).startsWith({{ $prefix | squote }})
+        (has(request.namespace) && request.namespace != '' ? request.namespace : request.name).startsWith({{ $prefix | squote }})
       message: {{ printf "org-provisioner may only write objects in namespaces named %s* and cluster-scoped objects named %s*" $prefix $prefix | quote }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
