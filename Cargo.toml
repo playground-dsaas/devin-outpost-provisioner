@@ -6,7 +6,12 @@ rust-version = "1.96"
 license = "MIT"
 description = "Gives every Devin organization its own Outpost, namespace and the manifests you choose."
 repository = "https://github.com/playground-dsaas/devin-outpost-provisioner"
-publish = false
+readme = "README.md"
+default-run = "org-provisioner"
+
+[lib]
+name = "org_provisioner"
+path = "src/lib.rs"
 
 [[bin]]
 name = "org-provisioner"
@@ -25,3 +30,6 @@ sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[dev-dependencies]
+axum = "0.8"

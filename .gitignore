@@ -1,4 +1,17 @@
-.cache/
-dist/
-provisioner/target/
+/target
+**/*.rs.bk
+
+# Helm packaging artifacts and the fetched operator subchart
+/dist
+/.cache
+*.tgz
 charts/devin-outposts-platform/charts/
+
+# Local env / secrets
+.env
+*.local
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

@@ -64,7 +64,7 @@ operator:
   # OpenShift's restricted-v2 SCC injects an equivalent context on its own.
 
 # ---------------------------------------------------------------------------
-# Org provisioner (provisioner/ in this repo; image from its Dockerfile).
+# Org provisioner (this repo's crate; image from the Dockerfile at the root).
 # ---------------------------------------------------------------------------
 provisioner:
   enabled: true

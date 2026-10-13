@@ -1,0 +1,61 @@
+# Persistent home directories: each session's volume is cloned from a golden
+# home snapshot (charts/devin-golden-home builds one per worker image). A
+# VolumeSnapshot is namespaced, so every org namespace gets its own, bound to
+# the same storage-side snapshot through a pre-provisioned
+# VolumeSnapshotContent. Keys apply in order: content, then snapshot, then pool.
+#
+# The VolumeSnapshotContent is cluster-scoped, so its name starts with the org
+# namespace (the admission policy allows nothing else) and it outlives the
+# namespace when an org is deleted; with deletionPolicy Retain it holds no
+# storage. The handle comes from the golden-home release:
+#   kubectl get volumesnapshotcontent -o jsonpath='{.items[?(@.spec.volumeSnapshotRef.name=="worker-home-<tag>")].status.snapshotHandle}'
+provisioner:
+  rbac:
+    rules:
+      - apiGroups: [""]
+        resources: [resourcequotas, limitranges]
+        verbs: [get, create, patch]
+      - apiGroups: [networking.k8s.io]
+        resources: [networkpolicies]
+        verbs: [get, create, patch]
+      - apiGroups: [outposts.cognition.com]
+        resources: [outpostpools]
+        verbs: [get, create, patch]
+      - apiGroups: [snapshot.storage.k8s.io]
+        resources: [volumesnapshotcontents, volumesnapshots]
+        verbs: [get, create, patch]
+
+manifests:
+  golden-home-content:
+    apiVersion: snapshot.storage.k8s.io/v1
+    kind: VolumeSnapshotContent
+    metadata:
+      name: "{{ namespace }}-golden-home"
+    spec:
+      deletionPolicy: Retain
+      driver: ebs.csi.aws.com            # the storage class's CSI driver
+      volumeSnapshotClassName: csi-aws-vsc
+      source:
+        snapshotHandle: snap-0123456789abcdef0
+      volumeSnapshotRef:
+        name: golden-home
+        namespace: "{{ namespace }}"
+  golden-home-snapshot:
+    apiVersion: snapshot.storage.k8s.io/v1
+    kind: VolumeSnapshot
+    metadata:
+      name: golden-home
+    spec:
+      volumeSnapshotClassName: csi-aws-vsc
+      source:
+        volumeSnapshotContentName: "{{ namespace }}-golden-home"
+  pool:
+    spec:
+      resume:
+        policy: FilesystemSnapshot
+        volumeSize: 20Gi
+        storageClassName: gp3-csi
+        volumeDataSource:
+          apiGroup: snapshot.storage.k8s.io
+          kind: VolumeSnapshot
+          name: golden-home

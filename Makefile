@@ -17,7 +17,7 @@ OPERATOR_CHART := $(PLATFORM_CHART)/charts/devin-outposts-k8s
 CRD_SCHEMAS    := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
 KUBECONFORM    := kubeconform -strict -summary -schema-location default -schema-location '$(CRD_SCHEMAS)'
 
-PROVISIONER_DIR   := provisioner
+PROVISIONER_DIR   := .
 PROVISIONER_TAG   ?= $(shell git rev-parse --short=12 HEAD)
 PROVISIONER_IMAGE ?= devin/org-provisioner:$(PROVISIONER_TAG)
 OPERATOR_IMAGE    ?= devin/devin-outposts-k8s:sha-$(OPERATOR_REF)
@@ -57,9 +57,11 @@ lint: operator-chart ## helm lint/template + kubeconform on both charts (default
 	  --set provisioner.image.repository=example/org-provisioner --set provisioner.image.tag=example \
 	  --set provisioner.token.existingSecret=devin-outposts-token \
 	  --post-renderer $(PLATFORM_CHART)/post-render.sh | $(KUBECONFORM) -skip ServiceMonitor
-	helm lint $(PLATFORM_CHART) -f $(PLATFORM_CHART)/values-openshift.yaml
-	helm template outposts $(PLATFORM_CHART) -n devin-system -f $(PLATFORM_CHART)/values-openshift.yaml \
+	helm lint $(PLATFORM_CHART) -f examples/values-openshift.yaml
+	helm template outposts $(PLATFORM_CHART) -n devin-system -f examples/values-openshift.yaml \
 	  | $(KUBECONFORM) -skip ServiceMonitor
+	helm template outposts $(PLATFORM_CHART) -n devin-system -f examples/values-openshift.yaml \
+	  -f examples/values-persistent-home.yaml | $(KUBECONFORM) -skip ServiceMonitor
 	helm lint $(GOLDEN_CHART)
 	helm template golden $(GOLDEN_CHART) -n devin-system \
 	  --set storageClassName=isilon --set volumeSnapshotClassName=isilon | $(KUBECONFORM)
@@ -93,4 +95,4 @@ provisioner-image: ## Build the org-provisioner image for linux/amd64 (set PROVI
 
 .PHONY: clean
 clean: ## Remove the cached operator checkout, packaged charts and Rust build output
-	rm -rf $(CACHE_DIR) $(DIST_DIR) $(OPERATOR_CHART) $(PROVISIONER_DIR)/target
+	rm -rf $(CACHE_DIR) $(DIST_DIR) $(OPERATOR_CHART) target

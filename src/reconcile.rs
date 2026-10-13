@@ -110,7 +110,7 @@ pub async fn run_pass(
 /// Delete every namespace this provisioner created whose org is not in
 /// `orgs`. An empty org list is treated as an API problem, not as "every org
 /// is gone". Excluded orgs still exist, so their namespaces are kept.
-async fn delete_orphan_namespaces(
+pub async fn delete_orphan_namespaces(
     config: &Config,
     api: &Api<Namespace>,
     managed: &[Namespace],
@@ -209,7 +209,7 @@ async fn reconcile_org(
 }
 
 /// Reuse the Outpost named for this org and restricted to it; otherwise create one.
-async fn ensure_outpost(
+pub async fn ensure_outpost(
     config: &Config,
     devin: &DevinClient,
     org: &Organization,

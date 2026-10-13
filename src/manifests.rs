@@ -63,6 +63,10 @@ impl Manifests {
         self.docs.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Render every document for one org. `metadata.namespace` is forced to the
     /// org namespace for namespaced kinds; cluster-scoped kinds are left alone.
     pub fn render(&self, vars: &Vars) -> anyhow::Result<Vec<serde_json::Value>> {
