@@ -5,9 +5,12 @@
 {{- $sa := include "platform.operator.serviceAccountName" . }}
 {{- $name := printf "%s-%s" .Release.Namespace $sa }}
 # Replaces the operator subchart's ClusterRole (operator.rbac.create: false).
-# Cluster-wide the operator only watches pools and its worker pods; it writes
-# pods, Secrets and PVCs only in org namespaces, through the org role the
-# provisioner binds there.
+# Cluster-wide the operator watches pools and its worker pods and may update
+# pools (status, finalizer); it writes pods, Secrets and PVCs only in org
+# namespaces, through the org role the provisioner binds there. Pool updates
+# must not depend on that RoleBinding: deleting an org namespace removes the
+# binding before the pool's finalizer runs, and the namespace would hang in
+# Terminating.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -16,8 +19,8 @@ metadata:
     {{- include "platform.provisioner.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["outposts.cognition.com"]
-    resources: ["outpostpools"]
-    verbs: ["get", "list", "watch"]
+    resources: ["outpostpools", "outpostpools/status", "outpostpools/finalizers"]
+    verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
