@@ -138,6 +138,10 @@ manifests:
     kind: VolumeSnapshotContent
     metadata:
       name: "{{ namespace }}-golden-home"
+      annotations:
+        # The snapshot controller writes the VolumeSnapshot's uid into
+        # volumeSnapshotRef; re-applying would clear it and unbind the pair.
+        outposts.cognition.com/apply-once: "true"
     spec:
       deletionPolicy: Retain
       driver: <csi driver>                       # e.g. ebs.csi.aws.com

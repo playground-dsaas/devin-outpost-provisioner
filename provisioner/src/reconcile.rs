@@ -6,7 +6,7 @@
 use anyhow::Context;
 use k8s_openapi::api::core::v1::Namespace;
 use kube::api::{
-    Api, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch, PatchParams,
+    Api, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch, PatchParams, PostParams,
 };
 use kube::discovery::Scope;
 use kube::{Client, Discovery};
@@ -24,6 +24,11 @@ pub const LABEL_MANAGED_BY: &str = "app.kubernetes.io/managed-by";
 pub const LABEL_ORG_ID: &str = "outposts.cognition.com/org-id";
 pub const ANNOTATION_ORG_NAME: &str = "outposts.cognition.com/org-name";
 pub const ANNOTATION_OUTPOST_ID: &str = "outposts.cognition.com/outpost-id";
+/// Manifests carrying this annotation (`"true"`) are created once and never
+/// re-applied, for objects a controller rewrites after creation (e.g. the
+/// `volumeSnapshotRef.uid` of a pre-provisioned VolumeSnapshotContent, which
+/// server-side apply would clear on every pass).
+pub const ANNOTATION_APPLY_ONCE: &str = "outposts.cognition.com/apply-once";
 pub const TOKEN_SECRET_NAME: &str = "devin-pool-token";
 pub const TOKEN_SECRET_KEY: &str = "token";
 
@@ -256,12 +261,25 @@ async fn apply(
             Api::namespaced_with(kube.clone(), &ns, &ar)
         }
     };
+    if apply_once(&doc) {
+        let obj: DynamicObject = serde_json::from_value(doc)?;
+        match api.create(&PostParams::default(), &obj).await {
+            Ok(_) => tracing::info!(kind = gvk.kind, name, "created"),
+            Err(kube::Error::Api(e)) if e.code == 409 => {}
+            Err(e) => return Err(e).with_context(|| format!("creating {}/{name}", gvk.kind)),
+        }
+        return Ok(());
+    }
     let params = PatchParams::apply(manager).force();
     api.patch(&name, &params, &Patch::Apply(&doc))
         .await
         .with_context(|| format!("applying {}/{name}", gvk.kind))?;
     tracing::debug!(kind = gvk.kind, name, "applied");
     Ok(())
+}
+
+fn apply_once(doc: &serde_json::Value) -> bool {
+    doc["metadata"]["annotations"][ANNOTATION_APPLY_ONCE].as_str() == Some("true")
 }
 
 fn gvk_of(doc: &serde_json::Value) -> anyhow::Result<GroupVersionKind> {
@@ -303,6 +321,14 @@ mod tests {
         assert_eq!(labels[LABEL_ORG_ID], org().id);
         let secret: Secret = serde_json::from_value(token_secret("ns", "tok")).unwrap();
         assert_eq!(secret.string_data.unwrap()[TOKEN_SECRET_KEY], "tok");
+    }
+
+    #[test]
+    fn apply_once_needs_the_annotation() {
+        assert!(!apply_once(&json!({"metadata": {"name": "x"}})));
+        assert!(apply_once(
+            &json!({"metadata": {"annotations": {ANNOTATION_APPLY_ONCE: "true"}}})
+        ));
     }
 
     #[test]
