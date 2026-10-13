@@ -17,7 +17,7 @@ NS=devin-system
 kubectl create namespace $NS
 kubectl -n $NS create secret generic devin-outposts-token --from-literal=token=<SVC_ACT_TOKEN>
 
-make operator-chart     # fetches the operator subchart at charts/devin-outposts-platform/OPERATOR_REF
+hack/operator-chart.sh  # fetches the operator subchart at charts/devin-outposts-platform/OPERATOR_REF
 helm install outposts charts/devin-outposts-platform -n $NS \
   -f examples/values-openshift.yaml       # or your own values; see values.yaml
 ```
@@ -30,7 +30,7 @@ directories (`charts/devin-golden-home` + per-org snapshot binding).
 
 The token is a Devin **enterprise service-user token** that can list
 organizations and manage Outposts. The provisioner image is built from the
-`Dockerfile` (`make provisioner-image`); the operator image is
+`Dockerfile` (`docker build -t <registry>/org-provisioner .`); the operator image is
 `ghcr.io/cognitionai/devin-outposts-k8s:sha-<OPERATOR_REF>`.
 
 ## Layout
@@ -46,8 +46,8 @@ src/, tests/                     the org provisioner (Rust) and its wire tests
 
 All documentation lives in the Rustdoc and in the comments of
 `charts/devin-outposts-platform/values.yaml`. Run
-`cargo doc --document-private-items --open`; `make lint` and `cargo test`
-are what CI runs.
+`cargo doc --document-private-items --open`. `cargo test` and the helm
+lint/template steps in `.github/workflows/ci.yaml` are the checks.
 
 ## License
 

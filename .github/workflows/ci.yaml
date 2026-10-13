@@ -31,6 +31,9 @@ jobs:
 
   helm:
     runs-on: ubuntu-latest
+    env:
+      PLATFORM: charts/devin-outposts-platform
+      KUBECONFORM: kubeconform -strict -summary -schema-location default -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
@@ -40,8 +43,31 @@ jobs:
         run: |
           curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz \
             | sudo tar xz -C /usr/local/bin kubeconform
-      - run: make lint
-      - run: make package
+      - name: Fetch the operator subchart at OPERATOR_REF
+        run: hack/operator-chart.sh
+      - name: lint
+        run: |
+          helm lint $PLATFORM --set provisioner.image.repository=example/org-provisioner \
+            --set provisioner.image.tag=example --set provisioner.token.existingSecret=devin-outposts-token
+          helm lint $PLATFORM -f examples/values-openshift.yaml
+          helm lint charts/devin-golden-home
+      - name: template + kubeconform
+        run: |
+          helm template outposts $PLATFORM -n devin-system \
+            --set provisioner.image.repository=example/org-provisioner --set provisioner.image.tag=example \
+            --set provisioner.token.existingSecret=devin-outposts-token \
+            --post-renderer $PLATFORM/post-render.sh | $KUBECONFORM -skip ServiceMonitor
+          helm template outposts $PLATFORM -n devin-system -f examples/values-openshift.yaml \
+            | $KUBECONFORM -skip ServiceMonitor
+          helm template outposts $PLATFORM -n devin-system -f examples/values-openshift.yaml \
+            -f examples/values-persistent-home.yaml | $KUBECONFORM -skip ServiceMonitor
+          helm template golden charts/devin-golden-home -n devin-system \
+            --set storageClassName=isilon --set volumeSnapshotClassName=isilon | $KUBECONFORM
+      - name: package
+        run: |
+          mkdir -p dist
+          helm package $PLATFORM -d dist
+          helm package charts/devin-golden-home -d dist
       - uses: actions/upload-artifact@v4
         with:
           name: charts

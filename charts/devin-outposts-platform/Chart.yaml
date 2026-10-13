@@ -19,7 +19,7 @@ maintainers:
   - name: Cognition
 dependencies:
   # charts/devin-outposts-k8s of CognitionAI/devin-outpost-k8s at the commit in
-  # OPERATOR_REF, copied into charts/ by `make operator-chart` (not committed).
+  # OPERATOR_REF, copied into charts/ by hack/operator-chart.sh (not committed).
   # Keep operator.image.tag in sync with it.
   - name: devin-outposts-k8s
     version: 0.1.0
