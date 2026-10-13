@@ -171,8 +171,9 @@ manifests:
 
 `VolumeSnapshotContent` is cluster-scoped, so its name starts with the org
 namespace: the admission policy only lets the provisioner write cluster-scoped
-objects named `<namespacePrefix>*`. The handle comes from the golden-home
-release:
+objects named `<namespacePrefix>*`. It also outlives the namespace when an org
+is deleted; with `deletionPolicy: Retain` it holds no storage, so delete it by
+name or leave it. The handle comes from the golden-home release:
 `kubectl get volumesnapshotcontent -o jsonpath='{.items[?(@.spec.volumeSnapshotRef.name=="worker-home-<tag>")].status.snapshotHandle}'`.
 
 ## OpenShift notes
@@ -201,7 +202,7 @@ What the chart grants (`templates/provisioner-rbac.yaml`,
 | who | cluster-wide ClusterRole | scoped how |
 |---|---|---|
 | provisioner | namespaces get/list/create/patch (+delete with `deleteOrphanNamespaces`); Secrets get/create/patch; RoleBindings get/create/patch + `bind` on the operator's org ClusterRole (and `rbac.bindClusterRoles`); `rbac.rules` (default: ResourceQuota, LimitRange, NetworkPolicy, OutpostPool) | ValidatingAdmissionPolicy: every write must be an object in a namespace named `<namespacePrefix>*` or a cluster-scoped object named `<namespacePrefix>*` |
-| operator | read OutpostPools and Pods | writes (worker Pods, Secrets, PVCs, pool status) only through the RoleBinding the provisioner puts in each org namespace; leader-election Lease and ConfigMap in the system namespace |
+| operator | read OutpostPools and Pods; update OutpostPools (status, finalizer) | writes worker Pods, Secrets and PVCs only through the RoleBinding the provisioner puts in each org namespace; leader-election Lease and ConfigMap in the system namespace. Pool updates are cluster-wide because deleting an org namespace removes that RoleBinding before the pool's finalizer runs |
 
 - The operator subchart's own ClusterRole is disabled (`operator.rbac.create: false`).
 - Cluster-scoped objects the provisioner may write are the org namespaces and
