@@ -150,6 +150,8 @@ provisioner:
 # {{ org_name }}, {{ org_slug }}, {{ outpost_id }}, {{ outpost_name }}.
 # Add a key to add an object, set a key to null to drop one. Changing a
 # manifest rolls out on the next pass (running session pods are not replaced).
+# Annotate a document with outposts.cognition.com/apply-once: "true" to create
+# it once and never re-apply it (objects a controller rewrites after creation).
 # Removing a key leaves the objects already created in place.
 # ---------------------------------------------------------------------------
 manifests:
