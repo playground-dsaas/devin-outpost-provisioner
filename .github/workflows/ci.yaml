@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PLATFORM: charts/devin-outposts-platform
-      KUBECONFORM: kubeconform -strict -summary -schema-location default -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+      KUBECONFORM: kubeconform -strict -summary -schema-location default -schema-location https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
