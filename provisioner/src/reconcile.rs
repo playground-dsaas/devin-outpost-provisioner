@@ -1,16 +1,20 @@
-//! One pass: for every organization make sure an Outpost, a namespace, the
-//! token Secret and the configured manifests exist, then make the Outpost the
-//! org's default platform if it has none. Finally delete the namespaces of
-//! organizations that no longer exist; nothing else is ever deleted.
+//! One pass: for every organization make sure an Outpost, a namespace and the
+//! token Secret exist, apply the configured manifests when the namespace is new
+//! or they changed, then make the Outpost the org's default platform if it has
+//! none. Finally delete the namespaces of organizations that no longer exist;
+//! nothing else is ever deleted.
+
+use std::collections::HashMap;
 
 use anyhow::Context;
 use k8s_openapi::api::core::v1::Namespace;
 use kube::api::{
-    Api, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch, PatchParams, PostParams,
+    Api, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch, PatchParams,
 };
 use kube::discovery::Scope;
 use kube::{Client, Discovery};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use crate::config::Config;
 use crate::devin::{DevinClient, Organization, Outpost};
@@ -24,11 +28,12 @@ pub const LABEL_MANAGED_BY: &str = "app.kubernetes.io/managed-by";
 pub const LABEL_ORG_ID: &str = "outposts.cognition.com/org-id";
 pub const ANNOTATION_ORG_NAME: &str = "outposts.cognition.com/org-name";
 pub const ANNOTATION_OUTPOST_ID: &str = "outposts.cognition.com/outpost-id";
-/// Manifests carrying this annotation (`"true"`) are created once and never
-/// re-applied, for objects a controller rewrites after creation (e.g. the
-/// `volumeSnapshotRef.uid` of a pre-provisioned VolumeSnapshotContent, which
-/// server-side apply would clear on every pass).
-pub const ANNOTATION_APPLY_ONCE: &str = "outposts.cognition.com/apply-once";
+/// Hash of the manifests last applied into the namespace. Manifests are applied
+/// like a Helm release, on change rather than every pass: some objects are
+/// rewritten by their controller after creation (a pre-provisioned
+/// VolumeSnapshotContent gets `volumeSnapshotRef.uid`) and a blind re-apply
+/// would undo that.
+pub const ANNOTATION_MANIFESTS_HASH: &str = "outposts.cognition.com/manifests-hash";
 pub const TOKEN_SECRET_NAME: &str = "devin-pool-token";
 pub const TOKEN_SECRET_KEY: &str = "token";
 
@@ -48,6 +53,23 @@ pub async fn run_pass(
         .run()
         .await
         .context("API discovery")?;
+    let namespaces: Api<Namespace> = Api::all(kube.clone());
+    let managed = namespaces
+        .list(&ListParams::default().labels(&format!("{LABEL_MANAGED_BY}={FIELD_MANAGER}")))
+        .await
+        .context("listing managed namespaces")?
+        .items;
+    let applied: HashMap<String, String> = managed
+        .iter()
+        .filter_map(|ns| {
+            let hash = ns
+                .metadata
+                .annotations
+                .as_ref()?
+                .get(ANNOTATION_MANIFESTS_HASH)?;
+            Some((ns.metadata.name.clone()?, hash.clone()))
+        })
+        .collect();
     let mut failed = 0;
     for org in orgs
         .iter()
@@ -62,6 +84,7 @@ pub async fn run_pass(
             token,
             org,
             &mut outposts,
+            applied.get(&crate::naming::namespace(&config.namespace_prefix, &org.id)),
         )
         .await
         {
@@ -70,7 +93,7 @@ pub async fn run_pass(
         }
     }
     let deleted = if config.delete_orphan_namespaces {
-        delete_orphan_namespaces(config, kube, &orgs).await?
+        delete_orphan_namespaces(config, &namespaces, &managed, &orgs).await?
     } else {
         0
     };
@@ -89,17 +112,13 @@ pub async fn run_pass(
 /// is gone". Excluded orgs still exist, so their namespaces are kept.
 async fn delete_orphan_namespaces(
     config: &Config,
-    kube: &Client,
+    api: &Api<Namespace>,
+    managed: &[Namespace],
     orgs: &[Organization],
 ) -> anyhow::Result<usize> {
     if orgs.is_empty() {
         return Ok(0);
     }
-    let api: Api<Namespace> = Api::all(kube.clone());
-    let managed = api
-        .list(&ListParams::default().labels(&format!("{LABEL_MANAGED_BY}={FIELD_MANAGER}")))
-        .await
-        .context("listing managed namespaces")?;
     let mut deleted = 0;
     for ns in managed {
         let name = ns.metadata.name.as_deref().unwrap_or_default();
@@ -137,6 +156,7 @@ async fn reconcile_org(
     token: &str,
     org: &Organization,
     outposts: &mut Vec<Outpost>,
+    applied_hash: Option<&String>,
 ) -> anyhow::Result<()> {
     let namespace = crate::naming::namespace(&config.namespace_prefix, &org.id);
     let outpost = ensure_outpost(config, devin, org, outposts).await?;
@@ -149,12 +169,16 @@ async fn reconcile_org(
     vars.insert("outpost_id", outpost.id.clone());
     vars.insert("outpost_name", outpost.name.clone());
 
+    let docs = manifests.render(&vars)?;
+    let hash = manifests_hash(&docs);
+    let ns = |hash: Option<&str>| namespace_manifest(&namespace, org, &outpost, hash);
+
     apply(
         kube,
         discovery,
         &namespace,
         FIELD_MANAGER,
-        namespace_manifest(&namespace, org, &outpost),
+        ns(applied_hash.map(String::as_str)),
     )
     .await?;
     apply(
@@ -165,8 +189,12 @@ async fn reconcile_org(
         token_secret(&namespace, token),
     )
     .await?;
-    for doc in manifests.render(&vars)? {
-        apply(kube, discovery, &namespace, MANIFESTS_FIELD_MANAGER, doc).await?;
+    if applied_hash != Some(&hash) {
+        for doc in docs {
+            apply(kube, discovery, &namespace, MANIFESTS_FIELD_MANAGER, doc).await?;
+        }
+        apply(kube, discovery, &namespace, FIELD_MANAGER, ns(Some(&hash))).await?;
+        tracing::info!(org = org.id, namespace, hash, "manifests applied");
     }
 
     if !devin.has_default_platform(&org.id).await? {
@@ -207,14 +235,29 @@ async fn ensure_outpost(
     Ok(created)
 }
 
-fn namespace_manifest(name: &str, org: &Organization, outpost: &Outpost) -> serde_json::Value {
+fn manifests_hash(docs: &[serde_json::Value]) -> String {
+    let bytes = serde_json::to_vec(docs).expect("rendered manifests are JSON");
+    format!("{:x}", Sha256::digest(bytes))[..16].to_string()
+}
+
+fn namespace_manifest(
+    name: &str,
+    org: &Organization,
+    outpost: &Outpost,
+    manifests_hash: Option<&str>,
+) -> serde_json::Value {
+    let mut annotations =
+        json!({ ANNOTATION_ORG_NAME: org.name, ANNOTATION_OUTPOST_ID: outpost.id });
+    if let Some(h) = manifests_hash {
+        annotations[ANNOTATION_MANIFESTS_HASH] = json!(h);
+    }
     json!({
         "apiVersion": "v1",
         "kind": "Namespace",
         "metadata": {
             "name": name,
             "labels": { LABEL_MANAGED_BY: FIELD_MANAGER, LABEL_ORG_ID: org.id },
-            "annotations": { ANNOTATION_ORG_NAME: org.name, ANNOTATION_OUTPOST_ID: outpost.id },
+            "annotations": annotations,
         }
     })
 }
@@ -261,25 +304,12 @@ async fn apply(
             Api::namespaced_with(kube.clone(), &ns, &ar)
         }
     };
-    if apply_once(&doc) {
-        let obj: DynamicObject = serde_json::from_value(doc)?;
-        match api.create(&PostParams::default(), &obj).await {
-            Ok(_) => tracing::info!(kind = gvk.kind, name, "created"),
-            Err(kube::Error::Api(e)) if e.code == 409 => {}
-            Err(e) => return Err(e).with_context(|| format!("creating {}/{name}", gvk.kind)),
-        }
-        return Ok(());
-    }
     let params = PatchParams::apply(manager).force();
     api.patch(&name, &params, &Patch::Apply(&doc))
         .await
         .with_context(|| format!("applying {}/{name}", gvk.kind))?;
     tracing::debug!(kind = gvk.kind, name, "applied");
     Ok(())
-}
-
-fn apply_once(doc: &serde_json::Value) -> bool {
-    doc["metadata"]["annotations"][ANNOTATION_APPLY_ONCE].as_str() == Some("true")
 }
 
 fn gvk_of(doc: &serde_json::Value) -> anyhow::Result<GroupVersionKind> {
@@ -315,20 +345,26 @@ mod tests {
             "devin-org-2f9990d15a5d",
             &org(),
             &outpost,
+            Some("abc"),
         ))
         .unwrap();
         let labels = ns.metadata.labels.unwrap();
         assert_eq!(labels[LABEL_ORG_ID], org().id);
+        assert_eq!(
+            ns.metadata.annotations.unwrap()[ANNOTATION_MANIFESTS_HASH],
+            "abc"
+        );
         let secret: Secret = serde_json::from_value(token_secret("ns", "tok")).unwrap();
         assert_eq!(secret.string_data.unwrap()[TOKEN_SECRET_KEY], "tok");
     }
 
     #[test]
-    fn apply_once_needs_the_annotation() {
-        assert!(!apply_once(&json!({"metadata": {"name": "x"}})));
-        assert!(apply_once(
-            &json!({"metadata": {"annotations": {ANNOTATION_APPLY_ONCE: "true"}}})
-        ));
+    fn manifests_hash_tracks_content() {
+        let a = vec![json!({"kind": "ConfigMap", "data": {"k": "1"}})];
+        let b = vec![json!({"kind": "ConfigMap", "data": {"k": "2"}})];
+        assert_eq!(manifests_hash(&a), manifests_hash(&a));
+        assert_ne!(manifests_hash(&a), manifests_hash(&b));
+        assert_eq!(manifests_hash(&a).len(), 16);
     }
 
     #[test]

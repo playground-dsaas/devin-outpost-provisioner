@@ -144,14 +144,14 @@ provisioner:
       drop: [ALL]
 
 # ---------------------------------------------------------------------------
-# Manifests applied into every org namespace, each pass, with server-side
+# Manifests applied into every org namespace with server-side
 # apply (key order). Plain Kubernetes objects; metadata.namespace defaults to
 # the org namespace. Placeholders: {{ namespace }}, {{ org_id }},
 # {{ org_name }}, {{ org_slug }}, {{ outpost_id }}, {{ outpost_name }}.
-# Add a key to add an object, set a key to null to drop one. Changing a
-# manifest rolls out on the next pass (running session pods are not replaced).
-# Annotate a document with outposts.cognition.com/apply-once: "true" to create
-# it once and never re-apply it (objects a controller rewrites after creation).
+# Add a key to add an object, set a key to null to drop one. Like a Helm
+# release, the list is applied when an org namespace is created and again
+# whenever its rendered content changes (hash kept in the namespace annotation
+# outposts.cognition.com/manifests-hash); running session pods are not replaced.
 # Removing a key leaves the objects already created in place.
 # ---------------------------------------------------------------------------
 manifests:
