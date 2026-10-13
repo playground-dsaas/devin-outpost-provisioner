@@ -2,9 +2,9 @@
 {{- $name := printf "%s-%s-scope" .Release.Namespace (include "platform.provisioner.name" .) }}
 {{- $prefix := required "provisioner.namespacePrefix is required" .Values.provisioner.namespacePrefix }}
 # RBAC cannot scope writes to a namespace-name prefix; this policy does: the
-# provisioner's ServiceAccount may only write namespaces named
-# <namespacePrefix>* and objects inside them. Requires Kubernetes >= 1.30
-# (OpenShift >= 4.17).
+# provisioner's ServiceAccount may only write objects in namespaces named
+# <namespacePrefix>* and cluster-scoped objects (namespaces included) whose own
+# name starts with it. Requires Kubernetes >= 1.30 (OpenShift >= 4.17).
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -24,10 +24,8 @@ spec:
       expression: request.userInfo.username == {{ printf "system:serviceaccount:%s:%s" .Release.Namespace (include "platform.provisioner.serviceAccountName" .) | squote }}
   validations:
     - expression: >-
-        request.resource.group == '' && request.resource.resource == 'namespaces'
-          ? request.name.startsWith({{ $prefix | squote }})
-          : request.namespace.startsWith({{ $prefix | squote }})
-      message: {{ printf "org-provisioner may only write namespaces named %s* and objects in them" $prefix | quote }}
+        (has(request.namespace) && request.namespace != '' ? request.namespace : request.name).startsWith({{ $prefix | squote }})
+      message: {{ printf "org-provisioner may only write objects in namespaces named %s* and cluster-scoped objects named %s*" $prefix $prefix | quote }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

@@ -1,9 +1,13 @@
 //! One pass: for every organization make sure an Outpost, a namespace, the
 //! token Secret and the configured manifests exist, then make the Outpost the
-//! org's default platform if it has none. Nothing is ever deleted.
+//! org's default platform if it has none. Finally delete the namespaces of
+//! organizations that no longer exist; nothing else is ever deleted.
 
 use anyhow::Context;
-use kube::api::{Api, DynamicObject, GroupVersionKind, Patch, PatchParams};
+use k8s_openapi::api::core::v1::Namespace;
+use kube::api::{
+    Api, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch, PatchParams,
+};
 use kube::discovery::Scope;
 use kube::{Client, Discovery};
 use serde_json::json;
@@ -60,13 +64,62 @@ pub async fn run_pass(
             tracing::error!(org = org.id, error = format!("{e:#}"), "org not reconciled");
         }
     }
+    let deleted = if config.delete_orphan_namespaces {
+        delete_orphan_namespaces(config, kube, &orgs).await?
+    } else {
+        0
+    };
     tracing::info!(
         orgs = orgs.len(),
         failed,
+        deleted,
         manifests = manifests.len(),
         "pass complete"
     );
     Ok(())
+}
+
+/// Delete every namespace this provisioner created whose org is not in
+/// `orgs`. An empty org list is treated as an API problem, not as "every org
+/// is gone". Excluded orgs still exist, so their namespaces are kept.
+async fn delete_orphan_namespaces(
+    config: &Config,
+    kube: &Client,
+    orgs: &[Organization],
+) -> anyhow::Result<usize> {
+    if orgs.is_empty() {
+        return Ok(0);
+    }
+    let api: Api<Namespace> = Api::all(kube.clone());
+    let managed = api
+        .list(&ListParams::default().labels(&format!("{LABEL_MANAGED_BY}={FIELD_MANAGER}")))
+        .await
+        .context("listing managed namespaces")?;
+    let mut deleted = 0;
+    for ns in managed {
+        let name = ns.metadata.name.as_deref().unwrap_or_default();
+        let org_id = ns
+            .metadata
+            .labels
+            .as_ref()
+            .and_then(|l| l.get(LABEL_ORG_ID));
+        let orphan = match org_id {
+            Some(id) => !orgs.iter().any(|o| &o.id == id),
+            None => false,
+        };
+        if !orphan
+            || !name.starts_with(&config.namespace_prefix)
+            || ns.metadata.deletion_timestamp.is_some()
+        {
+            continue;
+        }
+        api.delete(name, &DeleteParams::default())
+            .await
+            .with_context(|| format!("deleting namespace {name}"))?;
+        tracing::info!(namespace = name, org = org_id, "deleted orphan namespace");
+        deleted += 1;
+    }
+    Ok(deleted)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -111,7 +164,7 @@ async fn reconcile_org(
         apply(kube, discovery, &namespace, MANIFESTS_FIELD_MANAGER, doc).await?;
     }
 
-    if devin.default_outpost(&org.id).await?.is_none() {
+    if !devin.has_default_platform(&org.id).await? {
         devin.set_default_outpost(&org.id, &outpost.id).await?;
         tracing::info!(
             org = org.id,
@@ -141,7 +194,7 @@ async fn ensure_outpost(
         return Ok(o.clone()); // org was renamed; keep the existing Outpost
     }
     let created = devin
-        .create_outpost(&name, &org.id)
+        .create_outpost(&name, org)
         .await
         .context("creating outpost")?;
     tracing::info!(org = org.id, outpost = created.id, name, "created outpost");
@@ -223,7 +276,7 @@ fn gvk_of(doc: &serde_json::Value) -> anyhow::Result<GroupVersionKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use k8s_openapi::api::core::v1::{Namespace, Secret};
+    use k8s_openapi::api::core::v1::Secret;
     use kube::discovery::ApiResource;
 
     fn org() -> Organization {

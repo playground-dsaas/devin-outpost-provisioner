@@ -71,6 +71,8 @@ spec:
               value: {{ $p.outpostNamePrefix | quote }}
             - name: EXCLUDE_ORG_IDS
               value: {{ join "," $p.excludeOrgIds | quote }}
+            - name: DELETE_ORPHAN_NAMESPACES
+              value: {{ $p.deleteOrphanNamespaces | quote }}
             - name: POLL_INTERVAL_SECONDS
               value: {{ $p.pollIntervalSeconds | quote }}
             - name: RUST_LOG
