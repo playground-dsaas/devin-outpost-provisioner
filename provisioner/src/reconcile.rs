@@ -164,7 +164,7 @@ async fn reconcile_org(
         apply(kube, discovery, &namespace, MANIFESTS_FIELD_MANAGER, doc).await?;
     }
 
-    if devin.default_outpost(&org.id).await?.is_none() {
+    if !devin.has_default_platform(&org.id).await? {
         devin.set_default_outpost(&org.id, &outpost.id).await?;
         tracing::info!(
             org = org.id,
@@ -194,7 +194,7 @@ async fn ensure_outpost(
         return Ok(o.clone()); // org was renamed; keep the existing Outpost
     }
     let created = devin
-        .create_outpost(&name, &org.id)
+        .create_outpost(&name, org)
         .await
         .context("creating outpost")?;
     tracing::info!(org = org.id, outpost = created.id, name, "created outpost");
