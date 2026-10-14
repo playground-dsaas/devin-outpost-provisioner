@@ -1,11 +1,8 @@
-//! `org-provisioner`: one Devin Outpost, one namespace and a fixed set of
-//! manifests per Devin organization. Reconciles forever; see `reconcile.rs`.
+//! Entry point for the `org-provisioner` binary: reads the configuration and
+//! token, validates the manifests file, then runs [`reconcile::run_pass`]
+//! forever (see the crate docs in `lib.rs`).
 
-mod config;
-mod devin;
-mod manifests;
-mod naming;
-mod reconcile;
+use org_provisioner::{config, devin, manifests, reconcile};
 
 use std::time::Duration;
 
